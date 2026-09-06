@@ -122,8 +122,14 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session
 	// codec does not force a transcode: a matching source is still copied.
 	// It also settles a long-standing quirk: with no AudioCodec given, Jellyfin
 	// writes AudioCodec=m3u8 into the URLs it generates, which is not a codec.
-	if p.cfg.StreamVideoCodec != "" {
-		params.Set("VideoCodec", p.cfg.StreamVideoCodec)
+	// The session carries the codec negotiated with the viewer's browser; the
+	// configured value is only the fallback.
+	videoCodec := p.cfg.StreamVideoCodec
+	if session != nil && session.VideoCodec.Valid && session.VideoCodec.String != "" {
+		videoCodec = session.VideoCodec.String
+	}
+	if videoCodec != "" {
+		params.Set("VideoCodec", videoCodec)
 	}
 	if p.cfg.StreamAudioCodec != "" {
 		params.Set("AudioCodec", p.cfg.StreamAudioCodec)
