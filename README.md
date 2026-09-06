@@ -91,6 +91,8 @@ Navigate to `http://localhost:8097/admin` and enter your `BACKEND_API_KEY`.
 | `JFSHARE_RATE_LIMIT_REQUESTS` | Rate limit requests | `100` |
 | `JFSHARE_RATE_LIMIT_WINDOW_SECONDS` | Rate limit window | `60` |
 | `JFSHARE_MAX_TRANSCODE_BITRATE` | Upper bound for a transcode target, in bits per second. Only applies when Jellyfin transcodes; direct stream is unaffected | `20000000` |
+| `JFSHARE_STREAM_VIDEO_CODEC` | Video codec the share page can play. A source that already matches is stream-copied, not re-encoded. Empty sends no preference, which lets AV1/HEVC reach the browser untouched | `h264` |
+| `JFSHARE_STREAM_AUDIO_CODEC` | Audio codec the share page can play, same rule | `aac` |
 
 ## API Reference
 
