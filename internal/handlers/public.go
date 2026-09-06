@@ -308,10 +308,17 @@ func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.Share
 	if codec != "" {
 		session.VideoCodec = sql.NullString{String: codec, Valid: true}
 	}
-	session.VideoBitrate = sql.NullInt64{
-		Int64: int64(transcodeBitrate(item, codec, h.cfg.MaxTranscodeBitrate)),
-		Valid: true,
+	bitrate := transcodeBitrate(item, codec, h.cfg.MaxTranscodeBitrate)
+	// A share may cap its own quality; a cap only ever lowers what the source gives.
+	if share := h.shareForSession(r.Context(), session); share != nil {
+		if share.MaxVideoBitrate.Valid && int(share.MaxVideoBitrate.Int64) < bitrate {
+			bitrate = int(share.MaxVideoBitrate.Int64)
+		}
+		if share.MaxVideoHeight.Valid {
+			session.MaxVideoHeight = share.MaxVideoHeight
+		}
 	}
+	session.VideoBitrate = sql.NullInt64{Int64: int64(bitrate), Valid: true}
 
 	wantAudio := r.URL.Query().Get("audioStreamIndex")
 	wantSubs := r.URL.Query().Get("subtitleStreamIndex")
@@ -503,6 +510,17 @@ func transcodeBitrate(item *jellyfin.ItemInfo, targetCodec string, max int) int 
 		bitrate = max
 	}
 	return bitrate
+}
+
+// shareForSession loads the share a session belongs to. Errors are not fatal here:
+// the quality cap is a preference, and playback should not fail over it.
+func (h *PublicHandler) shareForSession(ctx context.Context, session *models.ShareSession) *models.Share {
+	share, err := h.db.GetShareByID(ctx, session.ShareID)
+	if err != nil {
+		log.Printf("Failed to load share for quality cap: %v", err)
+		return nil
+	}
+	return share
 }
 
 // subtitleURL points at our own proxy, never at Jellyfin. It is deliberately

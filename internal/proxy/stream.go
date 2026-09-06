@@ -150,6 +150,20 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session
 		if session.VideoBitrate.Valid {
 			params.Set("VideoBitrate", strconv.FormatInt(session.VideoBitrate.Int64, 10))
 		}
+		// A share-level quality cap. Jellyfin never upscales, so a cap above the
+		// source is simply ignored.
+		//
+		// Both dimensions are sent: MaxHeight alone is not reliably honoured -
+		// measured on a 1080p source, MaxHeight=480 still produced 1280x720, while
+		// the matching MaxWidth produced 854x480. Jellyfin drives the scaler off the
+		// width, so the 16:9 width for the requested height goes with it.
+		params.Del("MaxHeight")
+		params.Del("MaxWidth")
+		if session.MaxVideoHeight.Valid {
+			h := session.MaxVideoHeight.Int64
+			params.Set("MaxHeight", strconv.FormatInt(h, 10))
+			params.Set("MaxWidth", strconv.FormatInt((h*16+8)/9, 10))
+		}
 		if session.AudioStreamIndex.Valid {
 			params.Set("AudioStreamIndex", strconv.FormatInt(session.AudioStreamIndex.Int64, 10))
 		}
