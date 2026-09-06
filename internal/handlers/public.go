@@ -284,11 +284,14 @@ func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.Share
 		return r.URL.Query().Get("audioStreamIndex") == "" && r.URL.Query().Get("subtitleStreamIndex") == ""
 	}
 
-	session.VideoBitrate = sql.NullInt64{Int64: int64(transcodeBitrate(item, h.cfg.MaxTranscodeBitrate)), Valid: true}
-
+	// Codec first: the bitrate target depends on what we are re-encoding into.
 	codec := negotiateVideoCodec(item, r.URL.Query().Get("videoCodecs"), h.cfg.StreamVideoCodec)
 	if codec != "" {
 		session.VideoCodec = sql.NullString{String: codec, Valid: true}
+	}
+	session.VideoBitrate = sql.NullInt64{
+		Int64: int64(transcodeBitrate(item, codec, h.cfg.MaxTranscodeBitrate)),
+		Valid: true,
 	}
 
 	wantAudio := r.URL.Query().Get("audioStreamIndex")
@@ -359,19 +362,73 @@ func negotiateVideoCodec(item *jellyfin.ItemInfo, clientCodecs string, fallback 
 	return fallback
 }
 
-// transcodeBitrate picks the target bitrate for a possible transcode: the source's
-// own rate, so quality is preserved, capped so a 60 Mbit remux cannot pin the CPU.
-// Jellyfin has no "auto" for this - omitting the parameter makes it encode at
-// 128 kbit/s and downscale to 416x234 regardless of the source.
-func transcodeBitrate(item *jellyfin.ItemInfo, max int) int {
-	source := 0
-	if item != nil && len(item.MediaSources) > 0 {
-		source = item.MediaSources[0].Bitrate
+// minTranscodeBitrate keeps a pathologically small source from setting a target so
+// low that the encoder throws away detail the viewer would notice.
+const minTranscodeBitrate = 1000000
+
+// codecBitrateFactor is roughly the bitrate a codec needs for a given quality,
+// relative to h264. HEVC and AV1 reach the same picture with fewer bits, so
+// re-encoding one of them to h264 at the source's own bitrate loses quality
+// visibly - the target has to be scaled up. Older codecs go the other way.
+var codecBitrateFactor = map[string]float64{
+	"h264": 1.0, "avc": 1.0,
+	"hevc": 0.6, "h265": 0.6,
+	"av1":  0.5,
+	"vp9":  0.65,
+	"vp8":  1.1,
+	"vc1":  1.2,
+	"mpeg4": 1.6, "msmpeg4v3": 1.6,
+	"mpeg2video": 2.0,
+}
+
+// sourceVideo returns the source's video bitrate and codec. The video stream's own
+// rate is preferred over the container's, which also counts audio - Jellyfin's
+// VideoBitrate is video only.
+func sourceVideo(item *jellyfin.ItemInfo) (bitrate int, codec string) {
+	if item == nil || len(item.MediaSources) == 0 {
+		return 0, ""
 	}
-	if source <= 0 || source > max {
-		return max
+	ms := item.MediaSources[0]
+	for _, st := range ms.MediaStreams {
+		if st.Type == "Video" {
+			return st.BitRate, strings.ToLower(st.Codec)
+		}
 	}
-	return source
+	return ms.Bitrate, ""
+}
+
+// transcodeBitrate picks the target bitrate for a possible transcode. Jellyfin has
+// no "auto" for this - omitting the parameter makes it encode at 128 kbit/s and
+// downscale to 416x234 regardless of the source. The source's own rate is the
+// starting point, adjusted for the efficiency gap between the source codec and the
+// one we are asking for, then clamped.
+func transcodeBitrate(item *jellyfin.ItemInfo, targetCodec string, max int) int {
+	bitrate, sourceCodec := sourceVideo(item)
+	if bitrate <= 0 {
+		if item != nil && len(item.MediaSources) > 0 && item.MediaSources[0].Bitrate > 0 {
+			bitrate = item.MediaSources[0].Bitrate
+		} else {
+			return max
+		}
+	}
+
+	// A stream copy ignores the bitrate; only a re-encode needs the adjustment.
+	target := strings.ToLower(targetCodec)
+	if target != "" && sourceCodec != "" && target != sourceCodec {
+		from, okFrom := codecBitrateFactor[sourceCodec]
+		to, okTo := codecBitrateFactor[target]
+		if okFrom && okTo && from > 0 {
+			bitrate = int(float64(bitrate) * (to / from))
+		}
+	}
+
+	if bitrate < minTranscodeBitrate {
+		bitrate = minTranscodeBitrate
+	}
+	if bitrate > max {
+		bitrate = max
+	}
+	return bitrate
 }
 
 // subtitleURL points at our own proxy, never at Jellyfin.
