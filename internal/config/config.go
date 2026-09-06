@@ -17,6 +17,9 @@ type Config struct {
 	LogLevel                string
 	RateLimitRequests       int
 	RateLimitWindow         time.Duration
+	// MaxTranscodeBitrate caps the target bitrate handed to Jellyfin for a
+	// transcode. It never applies to direct stream, which is untouched.
+	MaxTranscodeBitrate     int
 }
 
 func Load() *Config {
@@ -31,6 +34,7 @@ func Load() *Config {
 		LogLevel:                getEnv("JFSHARE_LOG_LEVEL", "info"),
 		RateLimitRequests:       getEnvInt("JFSHARE_RATE_LIMIT_REQUESTS", 100),
 		RateLimitWindow:         time.Duration(getEnvInt("JFSHARE_RATE_LIMIT_WINDOW_SECONDS", 60)) * time.Second,
+		MaxTranscodeBitrate:     getEnvInt("JFSHARE_MAX_TRANSCODE_BITRATE", 20000000),
 	}
 }
 

@@ -268,23 +268,28 @@ func resolveTrackSelection(raw string, audio []models.AudioTrack, subs []models.
 	return sql.NullInt64{}, false
 }
 
-// pinTrackSelection validates the requested audio/subtitle indices for itemID and
-// writes them onto the session. Returns false if the viewer asked for a track the
-// item does not have.
-func (h *PublicHandler) pinTrackSelection(r *http.Request, session *models.ShareSession, itemType, itemID string) bool {
+// pinPlaybackParams resolves everything the stream proxy must not take from the
+// viewer: the audio/subtitle selection and the transcode target bitrate. Returns
+// false if the viewer asked for a track the item does not have.
+func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.ShareSession, itemType, itemID string) bool {
+	item, err := h.jf.GetItem(r.Context(), itemID)
+	if err != nil {
+		// Not fatal for playback itself; without a bitrate Jellyfin would fall back
+		// to 128 kbit/s on a transcode, so use the configured cap rather than nothing.
+		log.Printf("Failed to fetch item %s for playback params: %v", itemID, err)
+		session.VideoBitrate = sql.NullInt64{Int64: int64(h.cfg.MaxTranscodeBitrate), Valid: true}
+		return r.URL.Query().Get("audioStreamIndex") == "" && r.URL.Query().Get("subtitleStreamIndex") == ""
+	}
+
+	session.VideoBitrate = sql.NullInt64{Int64: int64(transcodeBitrate(item, h.cfg.MaxTranscodeBitrate)), Valid: true}
+
 	wantAudio := r.URL.Query().Get("audioStreamIndex")
 	wantSubs := r.URL.Query().Get("subtitleStreamIndex")
 	if wantAudio == "" && wantSubs == "" {
 		return true
 	}
 
-	item, err := h.jf.GetItem(r.Context(), itemID)
-	if err != nil {
-		log.Printf("Failed to fetch item %s for track selection: %v", itemID, err)
-		return false
-	}
 	audio, subs := h.tracksForItem(r.Context(), item, itemType, itemID)
-
 	a, ok := resolveTrackSelection(wantAudio, audio, subs, true)
 	if !ok {
 		return false
@@ -296,6 +301,21 @@ func (h *PublicHandler) pinTrackSelection(r *http.Request, session *models.Share
 	session.AudioStreamIndex = a
 	session.SubtitleStreamIndex = b
 	return true
+}
+
+// transcodeBitrate picks the target bitrate for a possible transcode: the source's
+// own rate, so quality is preserved, capped so a 60 Mbit remux cannot pin the CPU.
+// Jellyfin has no "auto" for this - omitting the parameter makes it encode at
+// 128 kbit/s and downscale to 416x234 regardless of the source.
+func transcodeBitrate(item *jellyfin.ItemInfo, max int) int {
+	source := 0
+	if item != nil && len(item.MediaSources) > 0 {
+		source = item.MediaSources[0].Bitrate
+	}
+	if source <= 0 || source > max {
+		return max
+	}
+	return source
 }
 
 func (h *PublicHandler) ValidatePassword(w http.ResponseWriter, r *http.Request) {
@@ -417,7 +437,7 @@ func (h *PublicHandler) StartPlayback(w http.ResponseWriter, r *http.Request) {
 		session.UserAgent = sql.NullString{String: userAgent, Valid: true}
 	}
 
-	if !h.pinTrackSelection(r, session, share.ItemType, share.JellyfinItemID) {
+	if !h.pinPlaybackParams(r, session, share.ItemType, share.JellyfinItemID) {
 		writeError(w, http.StatusBadRequest, "requested audio or subtitle track is not available")
 		return
 	}
@@ -719,7 +739,7 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		session.UserAgent = sql.NullString{String: userAgent, Valid: true}
 	}
 
-	if !h.pinTrackSelection(r, session, "Episode", episodeID) {
+	if !h.pinPlaybackParams(r, session, "Episode", episodeID) {
 		writeError(w, http.StatusBadRequest, "requested audio or subtitle track is not available")
 		return
 	}

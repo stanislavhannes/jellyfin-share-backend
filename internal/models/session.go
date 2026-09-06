@@ -35,6 +35,8 @@ type ShareSession struct {
 	// same reason as JellyfinItemID: the proxy must not read it from the request.
 	AudioStreamIndex    sql.NullInt64 `db:"audio_stream_index" json:"-"`
 	SubtitleStreamIndex sql.NullInt64 `db:"subtitle_stream_index" json:"-"`
+	// VideoBitrate is the transcode target derived from the source at play time.
+	VideoBitrate        sql.NullInt64 `db:"video_bitrate" json:"-"`
 }
 
 func (s *ShareSession) IsActive(heartbeatTimeout time.Duration) bool {

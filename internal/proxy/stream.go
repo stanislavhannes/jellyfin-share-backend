@@ -116,7 +116,12 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session
 	params.Del("AudioStreamIndex")
 	params.Del("SubtitleStreamIndex")
 	params.Del("SubtitleMethod")
+	// Same rule as the track indices: the viewer must not set the transcode target.
+	params.Del("VideoBitrate")
 	if session != nil {
+		if session.VideoBitrate.Valid {
+			params.Set("VideoBitrate", strconv.FormatInt(session.VideoBitrate.Int64, 10))
+		}
 		if session.AudioStreamIndex.Valid {
 			params.Set("AudioStreamIndex", strconv.FormatInt(session.AudioStreamIndex.Int64, 10))
 		}
