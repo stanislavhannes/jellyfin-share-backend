@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,36 +81,57 @@ func (p *StreamProxy) ServeStream(w http.ResponseWriter, r *http.Request) {
 		path = "master.m3u8"
 	}
 
-	// Determine which item to stream
-	// For Season shares, the itemId or MediaSourceId query param specifies the episode
+	// Determine which item to stream. This comes from the session, which pinned it at
+	// play time after the share (and, for a season, the episode) was validated. It must
+	// never come from the request: the viewer controls the query string, and taking an
+	// item id from there turned every share link into a key to the whole library.
 	itemID := share.JellyfinItemID
-	if episodeID := r.URL.Query().Get("itemId"); episodeID != "" {
-		itemID = episodeID
-	} else if mediaSourceID := r.URL.Query().Get("MediaSourceId"); mediaSourceID != "" {
-		itemID = mediaSourceID
+	if session.JellyfinItemID.Valid && session.JellyfinItemID.String != "" {
+		itemID = session.JellyfinItemID.String
 	}
 
 	// Build Jellyfin URL
-	jellyfinURL := p.buildJellyfinStreamURL(itemID, path, r.URL.RawQuery)
+	jellyfinURL := p.buildJellyfinStreamURL(itemID, path, r.URL.RawQuery, session)
 
 	// Proxy the request
 	p.proxyRequest(w, r, jellyfinURL)
 }
 
-func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string) string {
+func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session *models.ShareSession) string {
 	baseURL := p.jf.BaseURL()
 
-	// Parse existing query and ensure api_key is set (don't duplicate)
+	// Never carry the credential in the URL - proxyRequest authorizes via header.
+	// Deleting rather than merely skipping also strips any api_key a viewer replays
+	// back to us from a manifest generated before this changed.
 	params, _ := url.ParseQuery(query)
-	if params.Get("api_key") == "" {
-		params.Set("api_key", p.jf.APIKey())
+	params.Del("api_key")
+	// Pin the source to the same item as the path. Jellyfin honours MediaSourceId over
+	// the path, so leaving a viewer-supplied value here would re-open the hole that
+	// taking itemID from the session closes. itemId is Jellyfin-irrelevant; drop it.
+	params.Del("itemId")
+	params.Set("MediaSourceId", itemID)
+
+	// Track selection comes from the session too, for the same reason as itemID.
+	// Drop whatever the viewer sent before applying the validated choice.
+	params.Del("AudioStreamIndex")
+	params.Del("SubtitleStreamIndex")
+	params.Del("SubtitleMethod")
+	if session != nil {
+		if session.AudioStreamIndex.Valid {
+			params.Set("AudioStreamIndex", strconv.FormatInt(session.AudioStreamIndex.Int64, 10))
+		}
+		if session.SubtitleStreamIndex.Valid {
+			params.Set("SubtitleStreamIndex", strconv.FormatInt(session.SubtitleStreamIndex.Int64, 10))
+			// Burn subtitles into the video: HLS side-car tracks would need a second
+			// proxied endpoint and would not survive the transcode.
+			params.Set("SubtitleMethod", "Encode")
+		}
 	}
 
 	// Handle different path types
 	if strings.HasSuffix(path, ".m3u8") {
 		// HLS manifest
 		if path == "master.m3u8" {
-			params.Set("MediaSourceId", itemID)
 			params.Set("DeviceId", "jfshare-backend")
 			return baseURL + "/Videos/" + itemID + "/master.m3u8?" + params.Encode()
 		}
@@ -137,6 +159,7 @@ func (p *StreamProxy) proxyRequest(w http.ResponseWriter, r *http.Request, targe
 		http.Error(w, "proxy error", http.StatusBadGateway)
 		return
 	}
+	p.jf.AuthorizeRequest(req)
 
 	// Copy relevant headers
 	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
@@ -215,18 +238,16 @@ func (p *StreamProxy) ServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add API key
-	imageURL += "?api_key=" + p.jf.APIKey()
-
-	// Add query params for sizing
-	if maxWidth := r.URL.Query().Get("maxWidth"); maxWidth != "" {
-		imageURL += "&maxWidth=" + maxWidth
+	// Sizing params only; the credential travels as a header. Encoding them through
+	// url.Values also stops a caller from smuggling extra params via these values.
+	params := url.Values{}
+	for _, name := range []string{"maxWidth", "maxHeight", "quality"} {
+		if v := r.URL.Query().Get(name); v != "" {
+			params.Set(name, v)
+		}
 	}
-	if maxHeight := r.URL.Query().Get("maxHeight"); maxHeight != "" {
-		imageURL += "&maxHeight=" + maxHeight
-	}
-	if quality := r.URL.Query().Get("quality"); quality != "" {
-		imageURL += "&quality=" + quality
+	if len(params) > 0 {
+		imageURL += "?" + params.Encode()
 	}
 
 	// Proxy with caching enabled
@@ -235,6 +256,7 @@ func (p *StreamProxy) ServeImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error", http.StatusInternalServerError)
 		return
 	}
+	p.jf.AuthorizeRequest(req)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {

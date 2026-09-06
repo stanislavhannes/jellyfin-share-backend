@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -117,13 +116,17 @@ type MediaSource struct {
 
 type MediaStream struct {
 	Type         string `json:"Type"`
+	Index        int    `json:"Index"`
 	Codec        string `json:"Codec,omitempty"`
+	Language     string `json:"Language,omitempty"`
 	Width        int    `json:"Width,omitempty"`
 	Height       int    `json:"Height,omitempty"`
 	BitRate      int    `json:"BitRate,omitempty"`
 	Channels     int    `json:"Channels,omitempty"`
 	SampleRate   int    `json:"SampleRate,omitempty"`
 	DisplayTitle string `json:"DisplayTitle,omitempty"`
+	IsDefault    bool   `json:"IsDefault,omitempty"`
+	IsForced     bool   `json:"IsForced,omitempty"`
 }
 
 type PlaybackInfo struct {
@@ -150,10 +153,18 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("X-Emby-Token", c.apiKey)
+	c.AuthorizeRequest(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	return c.httpClient.Do(req)
+}
+
+// AuthorizeRequest attaches the Jellyfin credential as a header. Callers that build
+// their own request must use this instead of putting api_key in the query string:
+// Jellyfin echoes a request's query params back inside generated HLS manifests, and
+// the stream proxy forwards those manifests verbatim to untrusted share viewers.
+func (c *Client) AuthorizeRequest(req *http.Request) {
+	req.Header.Set("X-Emby-Token", c.apiKey)
 }
 
 func (c *Client) GetItem(ctx context.Context, itemID string) (*ItemInfo, error) {
@@ -218,32 +229,6 @@ func (c *Client) GetThumbURL(itemID string) string {
 	return fmt.Sprintf("%s/Items/%s/Images/Thumb", c.baseURL, itemID)
 }
 
-func (c *Client) GetStreamURL(itemID string, mediaSourceID string, container string) string {
-	params := url.Values{}
-	params.Set("Static", "true")
-	params.Set("mediaSourceId", mediaSourceID)
-	params.Set("api_key", c.apiKey)
-
-	return fmt.Sprintf("%s/Videos/%s/stream.%s?%s", c.baseURL, itemID, container, params.Encode())
-}
-
-func (c *Client) GetHLSStreamURL(itemID string, mediaSourceID string) string {
-	params := url.Values{}
-	params.Set("MediaSourceId", mediaSourceID)
-	params.Set("api_key", c.apiKey)
-	params.Set("DeviceId", "jfshare-backend")
-	params.Set("PlaySessionId", "jfshare-"+itemID)
-
-	return fmt.Sprintf("%s/Videos/%s/master.m3u8?%s", c.baseURL, itemID, params.Encode())
-}
-
-func (c *Client) GetTranscodedStreamURL(transcodingPath string) string {
-	if strings.HasPrefix(transcodingPath, "/") {
-		return c.baseURL + transcodingPath + "&api_key=" + c.apiKey
-	}
-	return c.baseURL + "/" + transcodingPath + "&api_key=" + c.apiKey
-}
-
 func (c *Client) VerifyConnection(ctx context.Context) error {
 	resp, err := c.doRequest(ctx, http.MethodGet, "/System/Info/Public", nil)
 	if err != nil {
@@ -260,10 +245,6 @@ func (c *Client) VerifyConnection(ctx context.Context) error {
 
 func (c *Client) BaseURL() string {
 	return c.baseURL
-}
-
-func (c *Client) APIKey() string {
-	return c.apiKey
 }
 
 // TicksToSeconds converts Jellyfin runtime ticks to seconds
