@@ -238,6 +238,63 @@ func isHopByHopHeader(header string) bool {
 	return hopByHopHeaders[header]
 }
 
+// ServeSubtitle delivers the WebVTT rendering of the text subtitle pinned to the
+// session. The index in the URL is checked against that pin rather than trusted,
+// so a viewer cannot pull an arbitrary subtitle - or any other stream - through it.
+func (p *StreamProxy) ServeSubtitle(w http.ResponseWriter, r *http.Request) {
+	sessionID, err := uuid.Parse(chi.URLParam(r, "sessionId"))
+	if err != nil {
+		http.Error(w, "invalid session", http.StatusBadRequest)
+		return
+	}
+	session, err := p.db.GetSessionByID(r.Context(), sessionID)
+	if err != nil || session == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	share, err := p.db.GetShareByID(r.Context(), session.ShareID)
+	if err != nil || share == nil || !share.IsValid() {
+		http.Error(w, "share not available", http.StatusForbidden)
+		return
+	}
+	if !session.VTTSubtitleIndex.Valid {
+		http.Error(w, "no subtitle for this session", http.StatusNotFound)
+		return
+	}
+	requested, err := strconv.ParseInt(strings.TrimSuffix(chi.URLParam(r, "index"), ".vtt"), 10, 64)
+	if err != nil || requested != session.VTTSubtitleIndex.Int64 {
+		http.Error(w, "subtitle not available", http.StatusForbidden)
+		return
+	}
+
+	itemID := share.JellyfinItemID
+	if session.JellyfinItemID.Valid && session.JellyfinItemID.String != "" {
+		itemID = session.JellyfinItemID.String
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
+		p.jf.GetSubtitleURL(itemID, itemID, int(requested)), nil)
+	if err != nil {
+		http.Error(w, "error", http.StatusInternalServerError)
+		return
+	}
+	p.jf.AuthorizeRequest(req)
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		log.Printf("Failed to fetch subtitle: %v", err)
+		http.Error(w, "error", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
 // ServeImage proxies images from Jellyfin
 func (p *StreamProxy) ServeImage(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")

@@ -127,6 +127,9 @@ type MediaStream struct {
 	DisplayTitle string `json:"DisplayTitle,omitempty"`
 	IsDefault    bool   `json:"IsDefault,omitempty"`
 	IsForced     bool   `json:"IsForced,omitempty"`
+	// IsTextSubtitleStream separates srt/ass/mov_text, which can be converted to
+	// WebVTT, from image formats like PGS that can only be rendered into the picture.
+	IsText       bool   `json:"IsTextSubtitleStream,omitempty"`
 }
 
 type PlaybackInfo struct {
@@ -211,6 +214,14 @@ func (c *Client) GetPlaybackInfo(ctx context.Context, itemID string) (*PlaybackI
 	}
 
 	return &info, nil
+}
+
+// GetSubtitleURL returns the WebVTT rendering of a text subtitle stream.
+func (c *Client) GetSubtitleURL(itemID, mediaSourceID string, index int) string {
+	if mediaSourceID == "" {
+		mediaSourceID = itemID
+	}
+	return fmt.Sprintf("%s/Videos/%s/%s/Subtitles/%d/Stream.vtt", c.baseURL, itemID, mediaSourceID, index)
 }
 
 func (c *Client) GetPosterURL(itemID string) string {
