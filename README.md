@@ -161,6 +161,21 @@ X-Backend-Key: your-api-key
 }
 ```
 
+#### Share Analytics
+```http
+GET /api/admin/shares/{id}/analytics
+X-Backend-Key: your-api-key
+```
+
+Returns total views, unique viewers, average watch time and views per day for the
+last 30 days.
+
+#### Server Stats
+```http
+GET /api/admin/stats
+X-Backend-Key: your-api-key
+```
+
 ### Public Endpoints
 
 #### Get Share Info
@@ -228,8 +243,8 @@ Content-Type: application/json
 
 ### Prerequisites
 
-- Go 1.21+
-- Node.js 18+
+- Go 1.23+ (see `go.mod`)
+- Node.js 20+ (the production image builds the frontend with `node:20`)
 - Docker and Docker Compose
 
 ### Setup
@@ -254,7 +269,7 @@ docker-compose -f docker-compose.dev.yml up
 │   ├── jellyfin/        # Jellyfin API client
 │   ├── middleware/      # Auth, rate limiting, sessions
 │   ├── models/          # Data models
-│   └── proxy/           # Stream & image proxy
+│   └── proxy/           # Stream, image & subtitle proxy
 ├── migrations/          # SQL migrations
 ├── web/
 │   └── src/
