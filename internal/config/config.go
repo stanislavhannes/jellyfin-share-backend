@@ -19,14 +19,14 @@ type Config struct {
 	RateLimitWindow         time.Duration
 	// MaxTranscodeBitrate caps the target bitrate handed to Jellyfin for a
 	// transcode. It never applies to direct stream, which is untouched.
-	MaxTranscodeBitrate     int
+	MaxTranscodeBitrate int
 	// StreamVideoCodec / StreamAudioCodec tell Jellyfin what the share page can
 	// actually play. Naming a codec does not force a transcode: a source that
 	// already matches is stream-copied. Set either to an empty string to send no
 	// preference, which is what the backend did before and what leaves AV1 or HEVC
 	// to reach the browser untouched.
-	StreamVideoCodec        string
-	StreamAudioCodec        string
+	StreamVideoCodec string
+	StreamAudioCodec string
 }
 
 func Load() *Config {
