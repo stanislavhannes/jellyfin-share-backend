@@ -40,6 +40,9 @@ type ShareSession struct {
 	// VideoCodec is the outcome of negotiating with the viewer's browser. Empty
 	// falls back to the configured default.
 	VideoCodec          sql.NullString `db:"video_codec" json:"-"`
+	// VTTSubtitleIndex is a text subtitle delivered as a sidecar rather than burned
+	// into the picture. SubtitleStreamIndex stays reserved for burn-in.
+	VTTSubtitleIndex    sql.NullInt64  `db:"vtt_subtitle_index" json:"-"`
 }
 
 func (s *ShareSession) IsActive(heartbeatTimeout time.Duration) bool {
@@ -56,6 +59,9 @@ type PlayRequest struct {
 type PlayResponse struct {
 	SessionID   uuid.UUID `json:"sessionId"`
 	PlaybackURL string    `json:"playbackUrl"`
+	// SubtitleURL is set when a text subtitle is delivered alongside the video
+	// instead of being rendered into it.
+	SubtitleURL string    `json:"subtitleUrl,omitempty"`
 }
 
 type HeartbeatRequest struct {

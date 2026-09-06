@@ -135,6 +135,9 @@ type SubtitleTrack struct {
 	Codec        string `json:"codec,omitempty"`
 	IsDefault    bool   `json:"isDefault"`
 	IsForced     bool   `json:"isForced"`
+	// IsText marks a subtitle that can be delivered as a WebVTT sidecar. Image
+	// subtitles must be burned in, which forces a video transcode.
+	IsText       bool   `json:"isText"`
 }
 
 type SharePublicInfo struct {
