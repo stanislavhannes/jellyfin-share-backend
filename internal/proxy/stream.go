@@ -109,7 +109,11 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session
 	// the path, so leaving a viewer-supplied value here would re-open the hole that
 	// taking itemID from the session closes. itemId is Jellyfin-irrelevant; drop it.
 	params.Del("itemId")
-	params.Set("MediaSourceId", itemID)
+	mediaSourceID := itemID
+	if session != nil && session.MediaSourceID.Valid && session.MediaSourceID.String != "" {
+		mediaSourceID = session.MediaSourceID.String
+	}
+	params.Set("MediaSourceId", mediaSourceID)
 
 	// Track selection comes from the session too, for the same reason as itemID -
 	// but only when the session actually pinned one. Sub-playlist and segment URLs
@@ -283,8 +287,13 @@ func (p *StreamProxy) ServeSubtitle(w http.ResponseWriter, r *http.Request) {
 		itemID = session.JellyfinItemID.String
 	}
 
+	mediaSourceID := itemID
+	if session.MediaSourceID.Valid && session.MediaSourceID.String != "" {
+		mediaSourceID = session.MediaSourceID.String
+	}
+
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
-		p.jf.GetSubtitleURL(itemID, itemID, int(requested)), nil)
+		p.jf.GetSubtitleURL(itemID, mediaSourceID, int(requested)), nil)
 	if err != nil {
 		http.Error(w, "error", http.StatusInternalServerError)
 		return

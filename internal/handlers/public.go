@@ -297,6 +297,12 @@ func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.Share
 		return fmt.Errorf("cannot verify track selection: %w", err)
 	}
 
+	// Pin the source the indices below are read from, so the proxy addresses the
+	// same one rather than assuming it equals the item.
+	if len(item.MediaSources) > 0 && item.MediaSources[0].ID != "" {
+		session.MediaSourceID = sql.NullString{String: item.MediaSources[0].ID, Valid: true}
+	}
+
 	// Codec first: the bitrate target depends on what we are re-encoding into.
 	codec := negotiateVideoCodec(item, r.URL.Query().Get("videoCodecs"), h.cfg.StreamVideoCodec)
 	if codec != "" {
