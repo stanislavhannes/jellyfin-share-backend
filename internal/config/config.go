@@ -31,12 +31,12 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		Port:                    getEnvInt("JFSHARE_PORT", 8080),
+		Port:                    getEnvInt("JFSHARE_PORT", 8097),
 		DatabaseDSN:             getEnv("JFSHARE_DB_DSN", "postgres://jfshare:jfshare@localhost:5432/jfshare?sslmode=disable"),
 		JellyfinBaseURL:         getEnv("JFSHARE_JELLYFIN_BASE_URL", "http://localhost:8096"),
 		JellyfinAPIKey:          getEnv("JFSHARE_JELLYFIN_API_KEY", ""),
 		BackendAPIKey:           getEnv("JFSHARE_BACKEND_API_KEY", ""),
-		PublicBaseURL:           getEnv("JFSHARE_PUBLIC_BASE_URL", "http://localhost:8080"),
+		PublicBaseURL:           getEnv("JFSHARE_PUBLIC_BASE_URL", "http://localhost:8097"),
 		SessionHeartbeatTimeout: time.Duration(getEnvInt("JFSHARE_SESSION_HEARTBEAT_TIMEOUT_SECONDS", 120)) * time.Second,
 		LogLevel:                getEnv("JFSHARE_LOG_LEVEL", "info"),
 		RateLimitRequests:       getEnvInt("JFSHARE_RATE_LIMIT_REQUESTS", 100),

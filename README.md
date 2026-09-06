@@ -81,7 +81,7 @@ Navigate to `http://localhost:8097/admin` and enter your `BACKEND_API_KEY`.
 
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|
-| `JFSHARE_PORT` | Server port | `8080` |
+| `JFSHARE_PORT` | Server port | `8097` |
 | `JFSHARE_JELLYFIN_BASE_URL` | Jellyfin server URL | Required |
 | `JFSHARE_JELLYFIN_API_KEY` | Jellyfin API key | Required |
 | `JFSHARE_BACKEND_API_KEY` | Admin API key | Required |
