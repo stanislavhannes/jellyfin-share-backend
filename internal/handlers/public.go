@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strconv"
+	"strings"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -283,6 +284,11 @@ func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.Share
 
 	session.VideoBitrate = sql.NullInt64{Int64: int64(transcodeBitrate(item, h.cfg.MaxTranscodeBitrate)), Valid: true}
 
+	codec := negotiateVideoCodec(item, r.URL.Query().Get("videoCodecs"), h.cfg.StreamVideoCodec)
+	if codec != "" {
+		session.VideoCodec = sql.NullString{String: codec, Valid: true}
+	}
+
 	wantAudio := r.URL.Query().Get("audioStreamIndex")
 	wantSubs := r.URL.Query().Get("subtitleStreamIndex")
 	if wantAudio == "" && wantSubs == "" {
@@ -301,6 +307,37 @@ func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.Share
 	session.AudioStreamIndex = a
 	session.SubtitleStreamIndex = b
 	return true
+}
+
+// negotiableVideoCodecs are the codecs a stream may be *copied* as. AV1 is
+// deliberately absent even when a browser reports decoding it: this HLS path
+// packages segments as mpegts, and AV1 in mpegts is what produced the black
+// picture with audio-only playback in the first place. It always gets re-encoded.
+var negotiableVideoCodecs = map[string]bool{"h264": true, "hevc": true}
+
+// negotiateVideoCodec picks the codec to ask Jellyfin for. If the source codec is
+// one the viewer's browser reported and one we trust in this container, name it so
+// Jellyfin stream-copies. Otherwise fall back, which means a re-encode.
+func negotiateVideoCodec(item *jellyfin.ItemInfo, clientCodecs string, fallback string) string {
+	if clientCodecs == "" || item == nil || len(item.MediaSources) == 0 {
+		return fallback
+	}
+	source := ""
+	for _, st := range item.MediaSources[0].MediaStreams {
+		if st.Type == "Video" {
+			source = strings.ToLower(st.Codec)
+			break
+		}
+	}
+	if source == "" || !negotiableVideoCodecs[source] {
+		return fallback
+	}
+	for _, c := range strings.Split(clientCodecs, ",") {
+		if strings.ToLower(strings.TrimSpace(c)) == source {
+			return source
+		}
+	}
+	return fallback
 }
 
 // transcodeBitrate picks the target bitrate for a possible transcode: the source's

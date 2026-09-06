@@ -137,12 +137,32 @@
     return t.displayTitle || t.language || `${fallback} ${t.index}`;
   }
 
+  // Report what this browser can actually decode so the server can stream-copy a
+  // matching source instead of re-encoding it. AV1 is never claimed: segments are
+  // mpegts here, and AV1 in mpegts does not decode even where AV1 itself does.
+  function supportedVideoCodecs() {
+    const codecs = ['h264']; // baseline; every target browser decodes it
+    try {
+      const el = document.createElement('video');
+      const supports = (type) =>
+        (el.canPlayType && el.canPlayType(type) !== '') ||
+        (window.MediaSource && MediaSource.isTypeSupported(type));
+      if (supports('video/mp4; codecs="hvc1.1.6.L93.B0"') ||
+          supports('video/mp4; codecs="hev1.1.6.L93.B0"')) {
+        codecs.push('hevc');
+      }
+    } catch (e) {
+      // Probing failed - h264 alone is always a safe answer
+    }
+    return codecs;
+  }
+
   // The server validates and pins these; sending them is a request, not a command.
   function trackQuery() {
-    const p = [];
+    const p = ['videoCodecs=' + supportedVideoCodecs().join(',')];
     if (selectedAudioIndex != null) p.push('audioStreamIndex=' + selectedAudioIndex);
     if (selectedSubtitleIndex != null) p.push('subtitleStreamIndex=' + selectedSubtitleIndex);
-    return p.length ? '?' + p.join('&') : '';
+    return '?' + p.join('&');
   }
 
   async function startPlayback() {
