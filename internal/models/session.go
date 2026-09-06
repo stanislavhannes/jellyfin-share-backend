@@ -46,6 +46,8 @@ type ShareSession struct {
 	// MediaSourceID is the source the stream and subtitle indices belong to. Equal
 	// to the item id for a single-version item, distinct for alternate versions.
 	MediaSourceID       sql.NullString `db:"media_source_id" json:"-"`
+	// MaxVideoHeight is the share's quality ceiling, resolved at play time.
+	MaxVideoHeight      sql.NullInt64  `db:"max_video_height" json:"-"`
 }
 
 func (s *ShareSession) IsActive(heartbeatTimeout time.Duration) bool {
