@@ -43,6 +43,9 @@ type ShareSession struct {
 	// VTTSubtitleIndex is a text subtitle delivered as a sidecar rather than burned
 	// into the picture. SubtitleStreamIndex stays reserved for burn-in.
 	VTTSubtitleIndex    sql.NullInt64  `db:"vtt_subtitle_index" json:"-"`
+	// MediaSourceID is the source the stream and subtitle indices belong to. Equal
+	// to the item id for a single-version item, distinct for alternate versions.
+	MediaSourceID       sql.NullString `db:"media_source_id" json:"-"`
 }
 
 func (s *ShareSession) IsActive(heartbeatTimeout time.Duration) bool {
