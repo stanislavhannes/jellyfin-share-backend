@@ -12,7 +12,14 @@ A secure, self-hosted solution for creating temporary, shareable links to your J
 - **Rich Metadata** - Displays poster, backdrop, ratings, cast, and more
 - **Admin Dashboard** - Web UI to manage and monitor all shares
 - **Session Tracking** - Monitor active viewers and playback sessions
-- **HLS Streaming** - Adaptive bitrate streaming for optimal playback
+- **HLS Streaming** - Segments are served through the backend, never from Jellyfin
+- **Browser-Compatible Playback** - The codec is negotiated with the viewer's browser,
+  so an AV1 or HEVC library plays without being needlessly re-encoded for everyone
+- **Audio and Subtitle Tracks** - Selectable before playback; text subtitles are
+  delivered as a WebVTT sidecar, so the video needs no transcode and the viewer can
+  switch them off
+- **Per-Share Quality** - Cap a single link at 1080p, 720p or 480p without touching
+  the library or the server settings
 
 ## Architecture
 
@@ -110,9 +117,12 @@ X-Backend-Key: your-api-key
   "jellyfinItemId": "abc123",
   "jellyfinUserId": "user123",
   "expiresInMinutes": 1440,
+  "neverExpires": false,
   "password": "optional-password",
   "maxTotalPlays": 5,
-  "maxConcurrentViewers": 2
+  "maxConcurrentViewers": 2,
+  "maxVideoHeight": 720,
+  "maxVideoBitrate": 4000000
 }
 ```
 
@@ -133,6 +143,11 @@ X-Backend-Key: your-api-key
 POST /api/admin/shares/{id}/revoke
 X-Backend-Key: your-api-key
 ```
+
+Add `?jellyfinUserId=...` to scope the call to one owner: the share is only revoked
+if it belongs to that user, otherwise the call is refused with 403. The plugin uses
+this so one Jellyfin user cannot revoke another user's share. Omitting it keeps full
+admin reach. The same applies to `GET /api/admin/shares/{id}/analytics`.
 
 #### Update Share
 ```http
@@ -166,6 +181,37 @@ Content-Type: application/json
 #### Start Playback
 ```http
 POST /api/public/shares/{token}/play
+```
+
+Optional query parameters, all validated against the item and then pinned to the
+session - the stream proxy never reads them from a later request:
+`videoCodecs` (comma-separated list the browser can decode, e.g. `h264,hevc`),
+`audioStreamIndex`, `subtitleStreamIndex`, and `audioLanguage` / `subtitleLanguage`,
+which take precedence for an episode because the track list was probed on a
+different one.
+
+The response carries `subtitleUrl` when a text subtitle was selected.
+
+#### List Episodes (Season and Series shares)
+```http
+GET /api/public/shares/{token}/episodes
+```
+
+#### Start Episode Playback
+```http
+POST /api/public/shares/{token}/episodes/{episodeId}/play
+```
+
+#### Finish Playback
+```http
+POST /api/public/sessions/{sessionId}/finish
+```
+
+#### Media, Images and Subtitles
+```http
+GET /api/public/stream/{sessionId}/{path}
+GET /api/public/images/{token}/{type}
+GET /api/public/subtitles/{sessionId}/{index}.vtt
 ```
 
 #### Heartbeat (keep session alive)
@@ -234,6 +280,11 @@ cd web && npm run build
 - **Rate limiting** - Public endpoints are rate-limited to prevent abuse
 - **IP hashing** - Client IPs are hashed for privacy in audit logs
 - **Automatic session cleanup** - Stale sessions are automatically terminated
+- **Credentials stay server-side** - The Jellyfin key travels as a request header, never
+  in a URL that could be echoed back into a manifest the viewer receives
+- **Playback is pinned to the session** - The item, media source, codec, bitrate and
+  track selection are resolved once when playback starts. The proxy never takes them
+  from a request, so a share link cannot be pointed at another item
 
 ## Companion Plugin
 
