@@ -160,8 +160,18 @@
   // The server validates and pins these; sending them is a request, not a command.
   function trackQuery() {
     const p = ['videoCodecs=' + supportedVideoCodecs().join(',')];
-    if (selectedAudioIndex != null) p.push('audioStreamIndex=' + selectedAudioIndex);
-    if (selectedSubtitleIndex != null) p.push('subtitleStreamIndex=' + selectedSubtitleIndex);
+    if (selectedAudioIndex != null) {
+      p.push('audioStreamIndex=' + selectedAudioIndex);
+      // Send the language too: for a season or series the list was probed on one
+      // episode, and stream N elsewhere is often a different language.
+      const t = (shareInfo.audioTracks || []).find((x) => x.index === selectedAudioIndex);
+      if (t?.language) p.push('audioLanguage=' + encodeURIComponent(t.language));
+    }
+    if (selectedSubtitleIndex != null) {
+      p.push('subtitleStreamIndex=' + selectedSubtitleIndex);
+      const t = (shareInfo.subtitleTracks || []).find((x) => x.index === selectedSubtitleIndex);
+      if (t?.language) p.push('subtitleLanguage=' + encodeURIComponent(t.language));
+    }
     return '?' + p.join('&');
   }
 
@@ -471,7 +481,7 @@
               <!-- Episode List for Season/Series -->
               <div class="episodes-section">
                 <h3 class="episodes-header">
-                  {shareInfo.itemType === 'Season' ? 'Episodes' : 'Seasons'}
+                  Episodes
                   {#if episodes.length > 0}
                     <span class="episodes-count">({episodes.length})</span>
                   {/if}
