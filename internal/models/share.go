@@ -53,6 +53,10 @@ type Share struct {
 	ExpiresAt                NullTime       `db:"expires_at" json:"expiresAt"`
 	PasswordHash             sql.NullString `db:"password_hash" json:"-"`
 	CreatedAt                time.Time      `db:"created_at" json:"createdAt"`
+	// MaxVideoHeight / MaxVideoBitrate cap the quality of this share. NULL means the
+	// source decides, which is the default.
+	MaxVideoHeight           sql.NullInt64  `db:"max_video_height" json:"maxVideoHeight,omitempty"`
+	MaxVideoBitrate          sql.NullInt64  `db:"max_video_bitrate" json:"maxVideoBitrate,omitempty"`
 	RevokedAt                sql.NullTime   `db:"revoked_at" json:"revokedAt,omitempty"`
 	LastActivityAt           sql.NullTime   `db:"last_activity_at" json:"lastActivityAt,omitempty"`
 }
@@ -107,6 +111,10 @@ type CreateShareRequest struct {
 	ExpiresInMinutes     int     `json:"expiresInMinutes"`
 	// NeverExpires overrides ExpiresInMinutes and stores a NULL expiry.
 	NeverExpires         bool    `json:"neverExpires,omitempty"`
+	// MaxVideoHeight caps the picture (720 for 720p and so on); MaxVideoBitrate caps
+	// the transcode target. Both only ever lower what the source would give.
+	MaxVideoHeight       *int    `json:"maxVideoHeight,omitempty"`
+	MaxVideoBitrate      *int    `json:"maxVideoBitrate,omitempty"`
 	Password             *string `json:"password,omitempty"`
 }
 
@@ -229,6 +237,7 @@ type ShareListItem struct {
 	ExpiresAt                *time.Time  `db:"expires_at" json:"expiresAt"`
 	CreatedAt                time.Time  `db:"created_at" json:"createdAt"`
 	RevokedAt                *time.Time `db:"revoked_at" json:"revokedAt,omitempty"`
+	MaxVideoHeight           *int64     `json:"maxVideoHeight,omitempty"`
 	HasPassword              bool       `json:"hasPassword"`
 	// PublicURL is built from PublicBaseURL, not from the caller's view of the
 	// backend, so clients never have to reconstruct it from their own base URL.

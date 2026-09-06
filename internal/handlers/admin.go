@@ -100,6 +100,13 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 		share.Title += " - " + item.Name
 	}
 
+	if req.MaxVideoHeight != nil && *req.MaxVideoHeight > 0 {
+		share.MaxVideoHeight = sql.NullInt64{Int64: int64(*req.MaxVideoHeight), Valid: true}
+	}
+	if req.MaxVideoBitrate != nil && *req.MaxVideoBitrate > 0 {
+		share.MaxVideoBitrate = sql.NullInt64{Int64: int64(*req.MaxVideoBitrate), Valid: true}
+	}
+
 	if req.MaxTotalPlays != nil {
 		share.MaxTotalPlays = sql.NullInt64{Int64: int64(*req.MaxTotalPlays), Valid: true}
 	}
@@ -185,6 +192,9 @@ func (h *AdminHandler) ListShares(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.RevokedAt.Valid {
 			item.RevokedAt = &s.RevokedAt.Time
+		}
+		if s.MaxVideoHeight.Valid {
+			item.MaxVideoHeight = &s.MaxVideoHeight.Int64
 		}
 		items = append(items, item)
 	}
