@@ -37,6 +37,9 @@ type ShareSession struct {
 	SubtitleStreamIndex sql.NullInt64 `db:"subtitle_stream_index" json:"-"`
 	// VideoBitrate is the transcode target derived from the source at play time.
 	VideoBitrate        sql.NullInt64 `db:"video_bitrate" json:"-"`
+	// VideoCodec is the outcome of negotiating with the viewer's browser. Empty
+	// falls back to the configured default.
+	VideoCodec          sql.NullString `db:"video_codec" json:"-"`
 }
 
 func (s *ShareSession) IsActive(heartbeatTimeout time.Duration) bool {
