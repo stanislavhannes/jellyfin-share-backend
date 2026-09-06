@@ -277,6 +277,50 @@ type EpisodeInfo struct {
 	SeasonNumber      int    `json:"seasonNumber,omitempty"`
 }
 
+// GetSeriesEpisodes returns every episode of a series in one request, ordered by
+// season then episode, instead of walking the seasons one call at a time.
+func (c *Client) GetSeriesEpisodes(ctx context.Context, seriesID string) ([]EpisodeInfo, error) {
+	if c.userID == "" {
+		return nil, fmt.Errorf("user ID not set - call FetchAndSetUserID first")
+	}
+
+	path := fmt.Sprintf(
+		"/Users/%s/Items?ParentId=%s&Recursive=true&IncludeItemTypes=Episode&SortBy=ParentIndexNumber,IndexNumber&SortOrder=Ascending",
+		c.userID, seriesID)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("jellyfin API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Items []ItemInfo `json:"Items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode episodes: %w", err)
+	}
+
+	episodes := make([]EpisodeInfo, 0, len(result.Items))
+	for _, item := range result.Items {
+		episodes = append(episodes, EpisodeInfo{
+			ID:             item.ID,
+			Name:           item.Name,
+			IndexNumber:    item.IndexNumber,
+			SeasonNumber:   item.ParentIndexNumber,
+			Overview:       item.Overview,
+			RuntimeSeconds: item.RunTimeTicks / 10000000,
+			HasPoster:      item.ImageTags.Primary != "",
+			PremiereDate:   item.PremiereDate,
+		})
+	}
+	return episodes, nil
+}
+
 // GetSeasonEpisodes returns all episodes in a season
 func (c *Client) GetSeasonEpisodes(ctx context.Context, seasonID string) ([]EpisodeInfo, error) {
 	if c.userID == "" {

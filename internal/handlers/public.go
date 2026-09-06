@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -271,17 +272,29 @@ func resolveTrackSelection(raw string, audio []models.AudioTrack, subs []models.
 	return sql.NullInt64{}, false
 }
 
+// errTrackNotAvailable means the viewer asked for a track this item does not have.
+// Anything else returned by pinPlaybackParams is an upstream failure and must not
+// be reported to the viewer as a bad track.
+var errTrackNotAvailable = errors.New("requested audio or subtitle track is not available")
+
 // pinPlaybackParams resolves everything the stream proxy must not take from the
-// viewer: the audio/subtitle selection and the transcode target bitrate. Returns
-// false if the viewer asked for a track the item does not have.
-func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.ShareSession, itemType, itemID string) bool {
+// viewer: the audio/subtitle selection, the codec and the transcode target bitrate.
+//
+// lenient applies to an episode inside a season or series share. There the track
+// list the viewer chose from was probed on a different episode, so an index that
+// does not exist here is a stale guess, not a bad request - fall back to the
+// default track instead of refusing to play.
+func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.ShareSession, itemType, itemID string, lenient bool) error {
 	item, err := h.jf.GetItem(r.Context(), itemID)
 	if err != nil {
-		// Not fatal for playback itself; without a bitrate Jellyfin would fall back
+		// Playback itself can still work; without a bitrate Jellyfin would fall back
 		// to 128 kbit/s on a transcode, so use the configured cap rather than nothing.
 		log.Printf("Failed to fetch item %s for playback params: %v", itemID, err)
 		session.VideoBitrate = sql.NullInt64{Int64: int64(h.cfg.MaxTranscodeBitrate), Valid: true}
-		return r.URL.Query().Get("audioStreamIndex") == "" && r.URL.Query().Get("subtitleStreamIndex") == ""
+		if r.URL.Query().Get("audioStreamIndex") == "" && r.URL.Query().Get("subtitleStreamIndex") == "" {
+			return nil
+		}
+		return fmt.Errorf("cannot verify track selection: %w", err)
 	}
 
 	// Codec first: the bitrate target depends on what we are re-encoding into.
@@ -297,17 +310,40 @@ func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.Share
 	wantAudio := r.URL.Query().Get("audioStreamIndex")
 	wantSubs := r.URL.Query().Get("subtitleStreamIndex")
 	if wantAudio == "" && wantSubs == "" {
-		return true
+		return nil
 	}
 
 	audio, subs := h.tracksForItem(r.Context(), item, itemType, itemID)
+
+	// In lenient mode the index came from a different episode, where stream N is
+	// often a different language. Match on language first so the viewer gets the
+	// track they picked rather than whatever happens to sit at that index here.
+	if lenient {
+		if lang := r.URL.Query().Get("audioLanguage"); lang != "" {
+			if idx, found := indexForLanguage(audioLanguages(audio), lang); found {
+				wantAudio = strconv.Itoa(idx)
+			}
+		}
+		if lang := r.URL.Query().Get("subtitleLanguage"); lang != "" {
+			if idx, found := indexForLanguage(subtitleLanguages(subs), lang); found {
+				wantSubs = strconv.Itoa(idx)
+			}
+		}
+	}
+
 	a, ok := resolveTrackSelection(wantAudio, audio, subs, true)
 	if !ok {
-		return false
+		if !lenient {
+			return errTrackNotAvailable
+		}
+		a = sql.NullInt64{}
 	}
 	b, ok := resolveTrackSelection(wantSubs, audio, subs, false)
 	if !ok {
-		return false
+		if !lenient {
+			return errTrackNotAvailable
+		}
+		b = sql.NullInt64{}
 	}
 	session.AudioStreamIndex = a
 
@@ -319,7 +355,39 @@ func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.Share
 	} else {
 		session.SubtitleStreamIndex = b
 	}
-	return true
+	return nil
+}
+
+func audioLanguages(tracks []models.AudioTrack) map[int]string {
+	out := make(map[int]string, len(tracks))
+	for _, t := range tracks {
+		out[t.Index] = strings.ToLower(t.Language)
+	}
+	return out
+}
+
+func subtitleLanguages(tracks []models.SubtitleTrack) map[int]string {
+	out := make(map[int]string, len(tracks))
+	for _, t := range tracks {
+		out[t.Index] = strings.ToLower(t.Language)
+	}
+	return out
+}
+
+// indexForLanguage finds the lowest stream index carrying a language, so the
+// choice stays stable when an episode offers the same language more than once.
+func indexForLanguage(byIndex map[int]string, want string) (int, bool) {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" {
+		return 0, false
+	}
+	best, found := 0, false
+	for idx, lang := range byIndex {
+		if lang == want && (!found || idx < best) {
+			best, found = idx, true
+		}
+	}
+	return best, found
 }
 
 func isTextSubtitle(subs []models.SubtitleTrack, index int64) bool {
@@ -412,7 +480,8 @@ func transcodeBitrate(item *jellyfin.ItemInfo, targetCodec string, max int) int 
 		}
 	}
 
-	// A stream copy ignores the bitrate; only a re-encode needs the adjustment.
+	// A stream copy ignores the bitrate; only a re-encode needs the adjustment and
+	// the floor. Raising it for a copy would just put a misleading number on record.
 	target := strings.ToLower(targetCodec)
 	if target != "" && sourceCodec != "" && target != sourceCodec {
 		from, okFrom := codecBitrateFactor[sourceCodec]
@@ -420,10 +489,9 @@ func transcodeBitrate(item *jellyfin.ItemInfo, targetCodec string, max int) int 
 		if okFrom && okTo && from > 0 {
 			bitrate = int(float64(bitrate) * (to / from))
 		}
-	}
-
-	if bitrate < minTranscodeBitrate {
-		bitrate = minTranscodeBitrate
+		if bitrate < minTranscodeBitrate {
+			bitrate = minTranscodeBitrate
+		}
 	}
 	if bitrate > max {
 		bitrate = max
@@ -431,13 +499,17 @@ func transcodeBitrate(item *jellyfin.ItemInfo, targetCodec string, max int) int 
 	return bitrate
 }
 
-// subtitleURL points at our own proxy, never at Jellyfin.
+// subtitleURL points at our own proxy, never at Jellyfin. It is deliberately
+// relative: a <track> with a cross-origin src is only fetched when the media
+// element is in CORS mode, so an absolute URL built from PublicBaseURL silently
+// yields no subtitles whenever the viewer reached the page on another hostname -
+// including the repo's own Vite dev setup.
 func (h *PublicHandler) subtitleURL(session *models.ShareSession) string {
 	if !session.VTTSubtitleIndex.Valid {
 		return ""
 	}
-	return fmt.Sprintf("%s/api/public/subtitles/%s/%d.vtt",
-		h.cfg.PublicBaseURL, session.ID.String(), session.VTTSubtitleIndex.Int64)
+	return fmt.Sprintf("/api/public/subtitles/%s/%d.vtt",
+		session.ID.String(), session.VTTSubtitleIndex.Int64)
 }
 
 func (h *PublicHandler) ValidatePassword(w http.ResponseWriter, r *http.Request) {
@@ -559,8 +631,13 @@ func (h *PublicHandler) StartPlayback(w http.ResponseWriter, r *http.Request) {
 		session.UserAgent = sql.NullString{String: userAgent, Valid: true}
 	}
 
-	if !h.pinPlaybackParams(r, session, share.ItemType, share.JellyfinItemID) {
-		writeError(w, http.StatusBadRequest, "requested audio or subtitle track is not available")
+	if err := h.pinPlaybackParams(r, session, share.ItemType, share.JellyfinItemID, false); err != nil {
+		if errors.Is(err, errTrackNotAvailable) {
+			writeError(w, http.StatusBadRequest, err.Error())
+		} else {
+			log.Printf("Failed to prepare playback: %v", err)
+			writeError(w, http.StatusBadGateway, "could not reach the media server")
+		}
 		return
 	}
 
@@ -690,20 +767,10 @@ func (h *PublicHandler) episodesForShare(ctx context.Context, share *models.Shar
 	case "Season":
 		return h.jf.GetSeasonEpisodes(ctx, share.JellyfinItemID)
 	case "Series":
-		seasons, err := h.jf.GetSeriesSeasons(ctx, share.JellyfinItemID)
-		if err != nil {
-			return nil, err
-		}
-		var all []jellyfin.EpisodeInfo
-		for _, season := range seasons {
-			eps, err := h.jf.GetSeasonEpisodes(ctx, season.ID)
-			if err != nil {
-				log.Printf("Failed to get episodes of season %s: %v", season.ID, err)
-				continue
-			}
-			all = append(all, eps...)
-		}
-		return all, nil
+		// One recursive query rather than one per season: this runs on two
+		// unauthenticated endpoints, and a 20-season show would otherwise cost 21
+		// upstream calls per request.
+		return h.jf.GetSeriesEpisodes(ctx, share.JellyfinItemID)
 	default:
 		return nil, nil
 	}
@@ -862,8 +929,10 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		session.UserAgent = sql.NullString{String: userAgent, Valid: true}
 	}
 
-	if !h.pinPlaybackParams(r, session, "Episode", episodeID) {
-		writeError(w, http.StatusBadRequest, "requested audio or subtitle track is not available")
+	// lenient: the track list came from a different episode of this season/series.
+	if err := h.pinPlaybackParams(r, session, "Episode", episodeID, true); err != nil {
+		log.Printf("Failed to prepare episode playback: %v", err)
+		writeError(w, http.StatusBadGateway, "could not reach the media server")
 		return
 	}
 
