@@ -66,9 +66,11 @@ RUN addgroup -g 1000 jfshare && \
 
 USER jfshare
 
-EXPOSE 8080
+EXPOSE 8097
 
+# Follow JFSHARE_PORT rather than hard-coding it: a fixed port here left the
+# container permanently unhealthy whenever the port was overridden.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider "http://localhost:${JFSHARE_PORT:-8097}/health" || exit 1
 
 ENTRYPOINT ["/app/jfshare"]
