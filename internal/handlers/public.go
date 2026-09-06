@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -205,6 +206,7 @@ func extractTracks(ms jellyfin.MediaSource) ([]models.AudioTrack, []models.Subti
 				Codec:        stream.Codec,
 				IsDefault:    stream.IsDefault,
 				IsForced:     stream.IsForced,
+				IsText:       stream.IsText,
 			})
 		}
 	}
@@ -305,8 +307,25 @@ func (h *PublicHandler) pinPlaybackParams(r *http.Request, session *models.Share
 		return false
 	}
 	session.AudioStreamIndex = a
-	session.SubtitleStreamIndex = b
+
+	// A text subtitle travels as a WebVTT sidecar: the viewer can toggle it and the
+	// video needs no re-encode. Only image formats have to be rendered into the
+	// picture, which is what SubtitleStreamIndex triggers.
+	if b.Valid && isTextSubtitle(subs, b.Int64) {
+		session.VTTSubtitleIndex = b
+	} else {
+		session.SubtitleStreamIndex = b
+	}
 	return true
+}
+
+func isTextSubtitle(subs []models.SubtitleTrack, index int64) bool {
+	for _, t := range subs {
+		if int64(t.Index) == index {
+			return t.IsText
+		}
+	}
+	return false
 }
 
 // negotiableVideoCodecs are the codecs a stream may be *copied* as. AV1 is
@@ -353,6 +372,15 @@ func transcodeBitrate(item *jellyfin.ItemInfo, max int) int {
 		return max
 	}
 	return source
+}
+
+// subtitleURL points at our own proxy, never at Jellyfin.
+func (h *PublicHandler) subtitleURL(session *models.ShareSession) string {
+	if !session.VTTSubtitleIndex.Valid {
+		return ""
+	}
+	return fmt.Sprintf("%s/api/public/subtitles/%s/%d.vtt",
+		h.cfg.PublicBaseURL, session.ID.String(), session.VTTSubtitleIndex.Int64)
 }
 
 func (h *PublicHandler) ValidatePassword(w http.ResponseWriter, r *http.Request) {
@@ -499,6 +527,7 @@ func (h *PublicHandler) StartPlayback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, models.PlayResponse{
 		SessionID:   session.ID,
 		PlaybackURL: playbackURL,
+		SubtitleURL: h.subtitleURL(session),
 	})
 }
 
@@ -803,5 +832,6 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, models.PlayResponse{
 		SessionID:   session.ID,
 		PlaybackURL: playbackURL,
+		SubtitleURL: h.subtitleURL(session),
 	})
 }
