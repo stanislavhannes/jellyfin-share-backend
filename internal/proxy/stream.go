@@ -116,6 +116,19 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session
 	params.Del("AudioStreamIndex")
 	params.Del("SubtitleStreamIndex")
 	params.Del("SubtitleMethod")
+	// Tell Jellyfin what the share page can play. Without this it stream-copies the
+	// source codec into mpegts, so an AV1 or HEVC library reaches the browser in a
+	// form it cannot decode - video drops out and only audio remains. Naming the
+	// codec does not force a transcode: a matching source is still copied.
+	// It also settles a long-standing quirk: with no AudioCodec given, Jellyfin
+	// writes AudioCodec=m3u8 into the URLs it generates, which is not a codec.
+	if p.cfg.StreamVideoCodec != "" {
+		params.Set("VideoCodec", p.cfg.StreamVideoCodec)
+	}
+	if p.cfg.StreamAudioCodec != "" {
+		params.Set("AudioCodec", p.cfg.StreamAudioCodec)
+	}
+
 	// Same rule as the track indices: the viewer must not set the transcode target.
 	params.Del("VideoBitrate")
 	if session != nil {
@@ -145,9 +158,11 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session
 	}
 
 	if strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".m4s") || strings.HasSuffix(path, ".mp4") {
-		// Segment file - remove AudioCodec param as it can confuse FFmpeg
-		// (AudioCodec=m3u8 from manifest URLs is not a valid codec)
-		params.Del("AudioCodec")
+		// Segment file. AudioCodec is set above; when no preference is configured
+		// drop it, because Jellyfin's own AudioCodec=m3u8 confuses FFmpeg.
+		if p.cfg.StreamAudioCodec == "" {
+			params.Del("AudioCodec")
+		}
 		return baseURL + "/Videos/" + itemID + "/" + path + "?" + params.Encode()
 	}
 
