@@ -1,7 +1,8 @@
 <script>
-  import { onMount, createEventDispatcher } from 'svelte';
+  import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import Player from './Player.svelte';
-  import { initCast, castMedia, castApiReady, castAvailable, castConnected, castDeviceName } from '../cast.js';
+  import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError,
+           castApiReady, castAvailable, castConnected, castDeviceName } from '../cast.js';
 
   export let shareInfo;
   export let token;
@@ -178,6 +179,63 @@
   }
 
   let casting = false;
+  let castHeartbeat = null;
+  let castSessionId = null;
+
+  // Releases the session server-side rather than leaving it to the stale-session
+  // reaper, which would hold a concurrent-viewer slot for the timeout's duration.
+  async function endCastSession() {
+    stopCastHeartbeat();
+    const id = castSessionId;
+    castSessionId = null;
+    stopCast();
+    if (!id) return;
+    try {
+      await fetch(`/api/public/sessions/${id}/finish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+        credentials: 'include'
+      });
+    } catch (e) {
+      console.warn('Could not finish cast session', e);
+    }
+  }
+
+  // While casting, the receiver plays and the Player component is never mounted,
+  // so nothing is sending heartbeats. Without them the session goes stale after
+  // JFSHARE_SESSION_HEARTBEAT_TIMEOUT_SECONDS - two minutes by default - and the
+  // stream proxy starts answering 403, killing playback mid-show.
+  function startCastHeartbeat(sessionId) {
+    stopCastHeartbeat();
+    castHeartbeat = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/public/sessions/${sessionId}/heartbeat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+          credentials: 'include'
+        });
+        if (!response.ok) stopCastHeartbeat();
+      } catch (e) {
+        // A transient network blip should not end the session; the next tick retries.
+        console.warn('Cast heartbeat failed', e);
+      }
+    }, 15000);
+  }
+
+  function stopCastHeartbeat() {
+    if (castHeartbeat) {
+      clearInterval(castHeartbeat);
+      castHeartbeat = null;
+    }
+  }
+
+  onDestroy(stopCastHeartbeat);
+
+  // Stop once the receiver is gone, so a finished cast does not keep a session
+  // alive and occupying a concurrent-viewer slot.
+  $: if (!$castConnected) stopCastHeartbeat();
 
   // The receiver decides what it can decode, not this browser, so the codec
   // negotiation is bypassed and h264 is requested outright. Every Cast device
@@ -187,6 +245,10 @@
     playError = '';
     casting = true;
     try {
+      // Pick the device first. /play counts against the share's play limit, so it
+      // must not run if the viewer dismisses the picker.
+      await ensureCastSession();
+
       const p = ['videoCodecs=h264'];
       if (selectedAudioIndex != null) p.push('audioStreamIndex=' + selectedAudioIndex);
       if (selectedSubtitleIndex != null) p.push('subtitleStreamIndex=' + selectedSubtitleIndex);
@@ -201,16 +263,21 @@
         return;
       }
       const data = await response.json();
-      await castMedia({
+      const chosen = (shareInfo.subtitleTracks || []).find((t) => t.index === selectedSubtitleIndex);
+      await loadOnCast({
         url: data.playbackUrl,
         subtitleUrl: data.subtitleUrl,
+        subtitleLanguage: chosen?.language,
         title: shareInfo.title,
         subtitle: shareInfo.year ? String(shareInfo.year) : '',
         posterUrl: shareInfo.posterUrl,
         durationSeconds: shareInfo.runtimeSeconds
       });
+      castSessionId = data.sessionId;
+      startCastHeartbeat(data.sessionId);
     } catch (e) {
-      playError = e?.message || 'Could not cast to the device';
+      // A dismissed picker is not a failure.
+      playError = describeCastError(e) || '';
     } finally {
       casting = false;
     }
@@ -587,6 +654,15 @@
                     </svg>
                     <span>{casting ? 'Casting…' : ($castConnected ? $castDeviceName : ($castAvailable ? 'Cast' : 'Cast (searching…)'))}</span>
                   </button>
+
+                  {#if $castConnected}
+                    <button class="cast-button" on:click={endCastSession} title="Stop casting">
+                      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M6 6h12v12H6z"/>
+                      </svg>
+                      <span>Stop</span>
+                    </button>
+                  {/if}
                 {/if}
               </div>
               {#if playError}

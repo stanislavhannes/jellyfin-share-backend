@@ -48,8 +48,11 @@ export function initCast() {
       const applyState = (state) => {
         castAvailable.set(state !== cast.framework.CastState.NO_DEVICES_AVAILABLE);
         castConnected.set(state === cast.framework.CastState.CONNECTED);
+        // During CONNECTING a session can exist whose device is not resolved yet;
+        // this listener runs outside the try above, so a throw here would be
+        // swallowed by the SDK and leave the stores stale.
         const session = context.getCurrentSession();
-        castDeviceName.set(session ? session.getCastDevice().friendlyName : '');
+        castDeviceName.set(session?.getCastDevice()?.friendlyName || '');
       };
 
       castApiReady.set(true);
@@ -71,21 +74,35 @@ export function initCast() {
 }
 
 /**
- * Sends media to the connected receiver, asking for a device first if needed.
- * `subtitleUrl` may be relative; it is resolved against the current page because
- * the receiver has no page context of its own.
+ * Makes sure a receiver is connected, opening the device picker if needed.
+ *
+ * Kept separate from loading on purpose: the caller starts a playback session on
+ * the server, which counts against the share's play limit, and that must not
+ * happen until a device has actually been chosen. Dismissing the picker would
+ * otherwise burn a play.
  */
-export async function castMedia({ url, title, subtitle, posterUrl, subtitleUrl, durationSeconds }) {
+export async function ensureCastSession() {
   if (!context) throw new Error('Cast is not available');
-
   let session = context.getCurrentSession();
   if (!session) {
     await context.requestSession();
     session = context.getCurrentSession();
     if (!session) throw new Error('No cast device was selected');
   }
+  return session;
+}
 
-  const abs = (u) => (u ? new URL(u, window.location.href).href : undefined);
+/**
+ * Loads media on the already-connected receiver.
+ *
+ * Relative URLs are resolved against `url`, not against the page: the playback
+ * URL comes from the server's configured public base, which is the address the
+ * receiver can reach, while the page may have been opened on a different host.
+ */
+export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl, subtitleLanguage, durationSeconds }) {
+  const session = await ensureCastSession();
+
+  const abs = (u) => (u ? new URL(u, url).href : undefined);
 
   // HLS delivered as mpegts segments; the receiver is told so explicitly rather
   // than left to sniff it from the extension.
@@ -104,6 +121,8 @@ export async function castMedia({ url, title, subtitle, posterUrl, subtitleUrl, 
     track.trackContentId = abs(subtitleUrl);
     track.trackContentType = 'text/vtt';
     track.subtype = chrome.cast.media.TextTrackType.SUBTITLES;
+    // Required for the SUBTITLES subtype; the receiver rejects the track without it.
+    track.language = subtitleLanguage || 'und';
     track.name = 'Subtitles';
     info.tracks = [track];
   }
@@ -118,4 +137,20 @@ export async function castMedia({ url, title, subtitle, posterUrl, subtitleUrl, 
 
 export function stopCast() {
   if (context) context.endCurrentSession(true);
+}
+
+/**
+ * The SDK rejects with an error code string or an event-like object, not an
+ * Error, so `e.message` is usually undefined. Returns null when the viewer simply
+ * dismissed the picker, which is not a failure worth showing.
+ */
+export function describeCastError(e) {
+  const code = typeof e === 'string' ? e : (e?.code || e?.message);
+  if (code === 'cancel' || code === chrome?.cast?.ErrorCode?.CANCEL) return null;
+  switch (code) {
+    case 'timeout': return 'The cast device did not respond';
+    case 'receiver_unavailable': return 'No cast device could be reached';
+    case 'session_error': return 'The cast device refused the media';
+    default: return 'Could not cast to the device';
+  }
 }

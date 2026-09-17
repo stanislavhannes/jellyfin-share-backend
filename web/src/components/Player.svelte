@@ -84,6 +84,13 @@
           console.log('Autoplay prevented:', e);
         });
       });
+      // The hls.js branch reports fatal errors through its own handler; this one
+      // had none, so a revoked share or a timed-out session left a blank player
+      // with no message. Safari is routed here now, so it needs one.
+      videoElement.addEventListener('error', () => {
+        error = 'Playback error occurred';
+        cleanup();
+      });
     } else {
       error = 'HLS playback is not supported in this browser';
     }
