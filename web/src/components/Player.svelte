@@ -19,8 +19,15 @@
   let videoElement;
   let hls;
   let heartbeatInterval;
+  // error ends playback and offers a way back. recovering is a passing condition
+  // hls.js is already working through, and it clears itself once frames flow
+  // again - conflating the two is what put "Playback stopped" over a film that
+  // was playing perfectly well.
   let error = null;
+  let recovering = null;
   let isFullscreen = false;
+  let recoveryAttempts = 0;
+  let lastRecoveryAt = 0;
 
   onMount(() => {
     initPlayer();
@@ -32,11 +39,16 @@
     // what AirPlay mirrors, so an episode finishing on an Apple TV lands here too.
     videoElement?.addEventListener('ended', handleEnded);
     videoElement?.addEventListener('loadedmetadata', showSubtitles);
+    // Frames are moving again, so whatever hls.js was recovering from is over.
+    videoElement?.addEventListener('playing', clearRecovering);
+    videoElement?.addEventListener('timeupdate', clearRecovering);
 
     return () => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       videoElement?.removeEventListener('ended', handleEnded);
       videoElement?.removeEventListener('loadedmetadata', showSubtitles);
+      videoElement?.removeEventListener('playing', clearRecovering);
+      videoElement?.removeEventListener('timeupdate', clearRecovering);
     };
   });
 
@@ -56,6 +68,10 @@
 
   function handleEnded() {
     dispatch('ended');
+  }
+
+  function clearRecovering() {
+    if (recovering) recovering = null;
   }
 
   onDestroy(() => {
@@ -94,21 +110,46 @@
       });
 
       hls.on(Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) {
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              error = 'Network error - trying to recover...';
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              error = 'Media error - trying to recover...';
+        if (!data.fatal) return;
+        console.warn('hls.js fatal error', data.type, data.details);
+
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            recovering = 'Connection interrupted, reconnecting';
+            hls.startLoad();
+            break;
+
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            // Common on this pipeline: the video is stream-copied while the audio
+            // is re-encoded, and the two can disagree at the first append. It is
+            // recoverable, so it must not read as the end of playback.
+            //
+            // hls.js asks for this escalation rather than a bare retry loop: a
+            // plain recover, then a codec swap, then admit defeat. Attempts made
+            // more than a few seconds apart are separate incidents, not a spin.
+            if (Date.now() - lastRecoveryAt > 5000) recoveryAttempts = 0;
+            lastRecoveryAt = Date.now();
+            recoveryAttempts++;
+
+            if (recoveryAttempts === 1) {
+              recovering = 'Recovering the stream';
               hls.recoverMediaError();
-              break;
-            default:
-              error = 'Playback error occurred';
+            } else if (recoveryAttempts === 2) {
+              recovering = 'Recovering the stream';
+              hls.swapAudioCodec();
+              hls.recoverMediaError();
+            } else {
+              recovering = null;
+              error = 'This stream could not be decoded in this browser';
               cleanup();
-              break;
-          }
+            }
+            break;
+
+          default:
+            recovering = null;
+            error = 'Playback error occurred';
+            cleanup();
+            break;
         }
       });
     } else if (nativeHls) {
@@ -260,6 +301,8 @@
         <p class="player__error-body">{error}</p>
         <button class="btn-back" on:click={handleClose}>Back to the share</button>
       </div>
+    {:else if recovering}
+      <p class="player__recovering">{recovering}…</p>
     {/if}
 
     <!-- x-webkit-airplay covers Safari, where Google Cast does not exist: Safari
@@ -372,6 +415,22 @@
     width: 100%;
     max-height: 100dvh;
     background: var(--color-paper);
+  }
+
+  /* A passing condition, not a stopped player: a quiet line that sits over the
+     picture without covering it, and leaves on its own once frames return. */
+  .player__recovering {
+    position: absolute;
+    top: var(--space-md);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: var(--space-xs) var(--space-md);
+    border-radius: var(--radius-pill);
+    background: var(--scrim-strong);
+    color: var(--color-ink-2);
+    font-size: var(--text-sm);
+    z-index: var(--z-dropdown);
+    pointer-events: none;
   }
 
   .player__error {
