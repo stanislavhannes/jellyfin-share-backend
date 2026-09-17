@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import Player from './Player.svelte';
+  import CastIcon from './CastIcon.svelte';
   import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError, onCastEnded,
            toBcp47, subtitlesDropped, castApiReady, castAvailable, castConnected,
            castDeviceName } from '../cast.js';
@@ -478,12 +479,55 @@
     imageLoaded = true;
   }
 
+  // A poster that 404s should leave a gap, not paint its alt text across the
+  // layout. The figure is dropped and the stage reflows to one column.
+  let posterFailed = false;
+
   function handleImageError() {
+    posterFailed = true;
     imageLoaded = true;
   }
-</script>
 
-<div class="share-container">
+  const absoluteTime = new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  });
+
+  // "in 2 d 3 h" answers "is this still worth opening"; the exact local moment
+  // answers "when do I lose it". The page shows both, in different places.
+  function formatAbsolute(dateStr) {
+    const d = new Date(dateStr);
+    return Number.isNaN(d.getTime()) ? '' : absoluteTime.format(d);
+  }
+
+  // ---- Presentation: the fold's caption is a list of specifics, not badges. ----
+  $: metaBits = [
+    shareInfo.year,
+    shareInfo.runtimeSeconds ? formatDuration(shareInfo.runtimeSeconds) : null,
+    shareInfo.officialRating,
+    shareInfo.videoQuality?.resolution,
+    shareInfo.communityRating > 0 ? `${formatRating(shareInfo.communityRating)} / 10 users` : null,
+    shareInfo.criticRating > 0 ? `${shareInfo.criticRating}% critics` : null
+  ].filter(Boolean);
+
+  $: techBits = shareInfo.videoQuality
+    ? [
+        `${shareInfo.videoQuality.width}\u00d7${shareInfo.videoQuality.height}`,
+        shareInfo.videoQuality.codec?.toUpperCase(),
+        shareInfo.videoQuality.audioCodec?.toUpperCase()
+      ].filter(Boolean)
+    : [];
+
+  // Long titles step down a size rung rather than crowding themselves.
+  $: titleIsLong = (shareInfo.title || '').length > 32;
+
+  $: foldImage = shareInfo.backdropUrl || shareInfo.posterUrl || '';
+</script>
+<div class="share">
   {#if isPlaying && playbackData}
     <!-- Keyed on the session: autoplay swaps in the next episode, and the player
          has to be rebuilt around it rather than handed a new URL mid-flight. -->
@@ -494,1275 +538,870 @@
               on:close={handlePlayerClose} on:ended={handlePlaybackEnded} />
     {/key}
   {:else}
-    <div class="backdrop-container">
-      <div class="backdrop" style="background-image: url('{shareInfo.backdropUrl || shareInfo.posterUrl}')"></div>
-      <div class="backdrop-gradient"></div>
-    </div>
-
-    <div class="content" class:loaded={imageLoaded}>
-      <!-- Logo (if available) -->
-      {#if shareInfo.logoUrl}
-        <div class="logo-container">
-          <img src="{shareInfo.logoUrl}?maxWidth=500" alt="" class="logo" />
-        </div>
+    <!-- ── The photographic fold. The artwork fills it; the type is annotation. ── -->
+    <section class="fold" class:fold--bare={!foldImage}>
+      {#if foldImage}
+        <img class="fold__image" src={foldImage} alt="" fetchpriority="high" />
+        <div class="fold__scrim"></div>
       {/if}
 
-      <div class="media-layout">
-        <!-- Poster -->
-        {#if shareInfo.posterUrl}
-          <div class="poster-section">
-            <div class="poster-wrapper">
-              <img
-                src="{shareInfo.posterUrl}?maxWidth=400"
-                alt={shareInfo.title}
-                on:load={handleImageLoad}
-                on:error={handleImageError}
-                class:loaded={imageLoaded}
-              />
-              {#if shareInfo.videoQuality}
-                <div class="quality-badge">{shareInfo.videoQuality.resolution}</div>
-              {/if}
-            </div>
+      <!-- N9 · Edge-aligned minimal. Wordmark left, the one status a recipient
+           needs right, nothing in between. -->
+      <header class="nav">
+        <span class="wordmark">Jellyfin Share</span>
+        <span class="nav__expiry">
+          {#if shareInfo.expiresAt}
+            <time datetime={shareInfo.expiresAt} title={formatAbsolute(shareInfo.expiresAt)}>
+              Expires in {formatExpiry(shareInfo.expiresAt)}
+            </time>
+          {:else}
+            No expiry
+          {/if}
+        </span>
+      </header>
+
+      <div class="plate">
+        {#if shareInfo.logoUrl}
+          <img class="plate__logo" src="{shareInfo.logoUrl}?maxWidth=500" alt={shareInfo.title} />
+        {:else}
+          <h1 class="plate__title" class:plate__title--long={titleIsLong}>{shareInfo.title}</h1>
+        {/if}
+
+        {#if metaBits.length}
+          <p class="caption">{metaBits.join(' · ')}</p>
+        {/if}
+        {#if shareInfo.genres && shareInfo.genres.length > 0}
+          <p class="caption caption--quiet">{shareInfo.genres.slice(0, 4).join(' · ')}</p>
+        {/if}
+      </div>
+    </section>
+
+    <!-- ── The print, laid over the photograph's edge, and the one action. ── -->
+    <section class="stage" class:stage--noprint={!shareInfo.posterUrl || posterFailed}>
+      {#if shareInfo.posterUrl && !posterFailed}
+        <figure class="print">
+          <img
+            src="{shareInfo.posterUrl}?maxWidth=400"
+            alt={shareInfo.title}
+            class:is-loaded={imageLoaded}
+            on:load={handleImageLoad}
+            on:error={handleImageError}
+          />
+          {#if shareInfo.videoQuality}
+            <figcaption>{shareInfo.videoQuality.resolution}</figcaption>
+          {/if}
+        </figure>
+      {/if}
+
+      <div class="act">
+        {#if shareInfo.overview}
+          <p class="lede">{shareInfo.overview}</p>
+        {/if}
+
+        {#if (shareInfo.audioTracks && shareInfo.audioTracks.length > 1) || (shareInfo.subtitleTracks && shareInfo.subtitleTracks.length > 0)}
+          <div class="tracks">
+            {#if shareInfo.audioTracks && shareInfo.audioTracks.length > 1}
+              <div class="field">
+                <label for="audio-select">Audio</label>
+                <select id="audio-select" bind:value={selectedAudioIndex}>
+                  <option value={null}>Default</option>
+                  {#each shareInfo.audioTracks as track}
+                    <option value={track.index}>{trackLabel(track, 'Track')}</option>
+                  {/each}
+                </select>
+              </div>
+            {/if}
+            {#if shareInfo.subtitleTracks && shareInfo.subtitleTracks.length > 0}
+              <div class="field">
+                <label for="subtitle-select">Subtitles</label>
+                <select id="subtitle-select" bind:value={selectedSubtitleIndex}>
+                  <option value={null}>None</option>
+                  {#each shareInfo.subtitleTracks as track}
+                    <option value={track.index}>{trackLabel(track, 'Subtitle')}</option>
+                  {/each}
+                </select>
+              </div>
+            {/if}
           </div>
         {/if}
 
-        <!-- Info Section -->
-        <div class="info-section">
-          <!-- Title (only if no logo) -->
-          {#if !shareInfo.logoUrl}
-            <h1 class="title">{shareInfo.title}</h1>
-          {/if}
-
-          <!-- Meta badges row -->
-          <div class="meta-badges">
-            {#if shareInfo.year}
-              <span class="badge">{shareInfo.year}</span>
-            {/if}
-            {#if shareInfo.officialRating}
-              <span class="badge rating-badge">{shareInfo.officialRating}</span>
-            {/if}
-            {#if shareInfo.runtimeSeconds}
-              <span class="badge">{formatDuration(shareInfo.runtimeSeconds)}</span>
-            {/if}
-            {#if shareInfo.videoQuality}
-              <span class="badge quality">{shareInfo.videoQuality.resolution}</span>
-            {/if}
-          </div>
-
-          <!-- Ratings -->
-          {#if shareInfo.communityRating > 0 || shareInfo.criticRating > 0}
-            <div class="ratings-row">
-              {#if shareInfo.communityRating > 0}
-                <div class="rating-item">
-                  <div class="rating-icon star">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-                    </svg>
-                  </div>
-                  <div class="rating-value">{formatRating(shareInfo.communityRating)}</div>
-                  <div class="rating-label">User Score</div>
-                </div>
-              {/if}
-              {#if shareInfo.criticRating > 0}
-                <div class="rating-item">
-                  <div class="rating-icon tomato" class:fresh={shareInfo.criticRating >= 60}>
-                    {shareInfo.criticRating}%
-                  </div>
-                  <div class="rating-label">Critics</div>
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          <!-- Genres -->
-          {#if shareInfo.genres && shareInfo.genres.length > 0}
-            <div class="genres">
-              {#each shareInfo.genres.slice(0, 4) as genre}
-                <span class="genre-tag">{genre}</span>
-              {/each}
-            </div>
-          {/if}
-
-          <!-- Overview -->
-          {#if shareInfo.overview}
-            <p class="overview">{shareInfo.overview}</p>
-          {/if}
-
-          <!-- Directors -->
-          {#if shareInfo.directors && shareInfo.directors.length > 0}
-            <div class="credits-row">
-              <span class="credits-label">Director{shareInfo.directors.length > 1 ? 's' : ''}</span>
-              <span class="credits-value">{shareInfo.directors.join(', ')}</span>
-            </div>
-          {/if}
-
-          <!-- Studios -->
-          {#if shareInfo.studios && shareInfo.studios.length > 0}
-            <div class="credits-row">
-              <span class="credits-label">Studio</span>
-              <span class="credits-value">{shareInfo.studios[0]}</span>
-            </div>
-          {/if}
-
-          <!-- Cast -->
-          {#if shareInfo.actors && shareInfo.actors.length > 0}
-            <div class="cast-section">
-              <div class="cast-header">
-                <span class="credits-label">Cast</span>
-                {#if shareInfo.actors.length > 4}
-                  <button class="show-more-btn" on:click={() => showFullCast = !showFullCast}>
-                    {showFullCast ? 'Show less' : `+${shareInfo.actors.length - 4} more`}
-                  </button>
-                {/if}
-              </div>
-              <div class="cast-list">
-                {#each (showFullCast ? shareInfo.actors : shareInfo.actors.slice(0, 4)) as actor}
-                  <div class="actor">
-                    <span class="actor-name">{actor.name}</span>
-                    {#if actor.role}
-                      <span class="actor-role">{actor.role}</span>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
-
-          <!-- Video Quality Details -->
-          {#if shareInfo.videoQuality}
-            <div class="quality-info">
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM9 8h2v8H9zm4 0h2v8h-2z"/>
-              </svg>
-              <span>{shareInfo.videoQuality.width}x{shareInfo.videoQuality.height}</span>
-              {#if shareInfo.videoQuality.codec}
-                <span class="divider">|</span>
-                <span>{shareInfo.videoQuality.codec.toUpperCase()}</span>
-              {/if}
-              {#if shareInfo.videoQuality.audioCodec}
-                <span class="divider">|</span>
-                <span>{shareInfo.videoQuality.audioCodec.toUpperCase()}</span>
-              {/if}
-            </div>
-          {/if}
-
-          <!-- Plays Remaining -->
-          {#if shareInfo.maxTotalPlays}
-            <div class="plays-info">
-              <div class="plays-header">
-                <span class="plays-label">Plays remaining</span>
-                <span class="plays-count">{getPlaysRemaining()} / {shareInfo.maxTotalPlays}</span>
-              </div>
-              <div class="plays-bar">
-                <div
-                  class="plays-fill"
-                  style="width: {getPlaysPercentage()}%"
-                  class:low={getPlaysPercentage() <= 33}
-                  class:medium={getPlaysPercentage() > 33 && getPlaysPercentage() <= 66}
-                ></div>
-              </div>
-            </div>
-          {/if}
-
-          <!-- Expiry Warning -->
-          <div class="expiry-info">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6z"/>
-            </svg>
-            {#if shareInfo.expiresAt}
-              <span>Expires in {formatExpiry(shareInfo.expiresAt)}</span>
-            {:else}
-              <span>Never expires</span>
-            {/if}
-          </div>
-
-          {#if (shareInfo.audioTracks && shareInfo.audioTracks.length > 1) || (shareInfo.subtitleTracks && shareInfo.subtitleTracks.length > 0)}
-            <div class="track-selectors">
-              {#if shareInfo.audioTracks && shareInfo.audioTracks.length > 1}
-                <div class="track-selector">
-                  <label for="audio-select">Audio</label>
-                  <select id="audio-select" bind:value={selectedAudioIndex}>
-                    <option value={null}>Default</option>
-                    {#each shareInfo.audioTracks as track}
-                      <option value={track.index}>{trackLabel(track, 'Track')}</option>
-                    {/each}
-                  </select>
-                </div>
-              {/if}
-              {#if shareInfo.subtitleTracks && shareInfo.subtitleTracks.length > 0}
-                <div class="track-selector">
-                  <label for="subtitle-select">Subtitles</label>
-                  <select id="subtitle-select" bind:value={selectedSubtitleIndex}>
-                    <option value={null}>None</option>
-                    {#each shareInfo.subtitleTracks as track}
-                      <option value={track.index}>{trackLabel(track, 'Subtitle')}</option>
-                    {/each}
-                  </select>
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          <!-- Password or Play Button -->
-          {#if showPasswordForm}
-            <div class="password-section">
-              <div class="password-header">
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>
-                </svg>
-                <span>Password Required</span>
-              </div>
-              <form on:submit|preventDefault={submitPassword}>
-                <div class="input-group">
-                  <input
-                    type="password"
-                    bind:value={passwordInput}
-                    placeholder="Enter password"
-                    disabled={passwordLoading}
-                    class:error={passwordError}
-                  />
-                  <button type="submit" disabled={passwordLoading} class="unlock-btn">
-                    {#if passwordLoading}
-                      <div class="btn-spinner"></div>
-                    {:else}
-                      Unlock
-                    {/if}
-                  </button>
-                </div>
-                {#if passwordError}
-                  <p class="error-msg">{passwordError}</p>
-                {/if}
-              </form>
-            </div>
-          {:else}
-            {#if isSeasonOrSeries}
-              <!-- Episode List for Season/Series -->
-              <div class="episodes-section">
-                <h3 class="episodes-header">
-                  Episodes
-                  {#if episodes.length > 0}
-                    <span class="episodes-count">({episodes.length})</span>
+        {#if showPasswordForm}
+          <form class="gate" on:submit|preventDefault={submitPassword} novalidate>
+            <div class="field">
+              <label for="share-password">Password</label>
+              <div class="gate__row">
+                <input
+                  id="share-password"
+                  type="password"
+                  bind:value={passwordInput}
+                  placeholder="Set by whoever shared this"
+                  disabled={passwordLoading}
+                  aria-invalid={passwordError ? 'true' : 'false'}
+                  aria-describedby="share-password-help"
+                />
+                <button type="submit" class="btn-primary" disabled={passwordLoading}>
+                  {#if passwordLoading}
+                    <span class="meter meter--inline" aria-hidden="true"></span>
+                    <span>Checking</span>
+                  {:else}
+                    <span>Unlock</span>
                   {/if}
-                </h3>
-
-                {#if $castApiReady && episodes.length > 0}
-                  <div class="episodes-cast-row">
-                    {#if $castConnected}
-                      <span class="cast-status">
-                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                          <path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zM21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
-                        </svg>
-                        <span>Connected to <strong>{$castDeviceName}</strong> — pick an episode to play it there</span>
-                      </span>
-                      <button class="cast-button" on:click={endCastSession} title="Stop casting">
-                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                          <path d="M6 6h12v12H6z"/>
-                        </svg>
-                        <span>Stop</span>
-                      </button>
-                    {:else}
-                      <button class="cast-button" on:click={connectCast} disabled={casting}
-                              title="Cast to a device">
-                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                          <path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zM21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
-                        </svg>
-                        <span>{$castAvailable ? 'Cast to a TV' : 'Cast (searching…)'}</span>
-                      </button>
-                    {/if}
-                  </div>
-                {/if}
-
-                {#if episodesLoading}
-                  <div class="episodes-loading">
-                    <div class="loading-spinner"></div>
-                    <span>Loading episodes...</span>
-                  </div>
-                {:else if episodesError}
-                  <p class="error-msg">{episodesError}</p>
-                {:else if episodes.length === 0}
-                  <p class="episodes-empty">No episodes found</p>
-                {:else}
-                  <div class="episodes-list">
-                    {#each episodes as episode}
-                      <button class="episode-card"
-                              class:episode-casting={$castConnected && castingEpisodeId === episode.id}
-                              disabled={casting}
-                              on:click={() => ($castConnected ? castEpisode(episode) : startEpisodePlayback(episode))}>
-                        <div class="episode-number">
-                          {#if episode.seasonNumber}
-                            S{episode.seasonNumber}E{episode.indexNumber || '?'}
-                          {:else}
-                            {episode.indexNumber || '?'}
-                          {/if}
-                        </div>
-                        <div class="episode-info">
-                          <div class="episode-title">{episode.name}</div>
-                          {#if episode.runtimeSeconds}
-                            <div class="episode-meta">{formatDuration(episode.runtimeSeconds)}</div>
-                          {/if}
-                        </div>
-                        <div class="episode-play">
-                          {#if $castConnected}
-                            <svg class="cast-glyph" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                              <path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zM21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
-                            </svg>
-                          {:else}
-                            <svg viewBox="0 0 24 24" fill="currentColor">
-                              <path d="M8 5v14l11-7z"/>
-                            </svg>
-                          {/if}
-                        </div>
-                      </button>
-                    {/each}
-                  </div>
-                {/if}
-
-                {#if playError}
-                  <p class="error-msg">{playError}</p>
-                {/if}
-                {#if $subtitlesDropped}
-                  <p class="cast-note">Casting without subtitles — the receiver would not take the track.</p>
-                {/if}
-              </div>
-            {:else}
-              <div class="play-row">
-                <button class="play-button" on:click={startPlayback}>
-                  <div class="play-icon">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M8 5v14l11-7z"/>
-                    </svg>
-                  </div>
-                  <span>Play Now</span>
                 </button>
+              </div>
+              <p class="field__help" id="share-password-help" class:field__help--error={passwordError}>
+                {passwordError || 'This link is password protected.'}
+              </p>
+            </div>
+          </form>
+        {:else if isSeasonOrSeries}
+          <div class="episodes">
+            <h2 class="episodes__head">
+              Episodes
+              {#if episodes.length > 0}<span class="episodes__n">{episodes.length}</span>{/if}
+            </h2>
 
-                {#if $castApiReady}
-                  <button class="cast-button" on:click={startCast} disabled={casting}
-                          title={$castConnected ? `Cast to ${$castDeviceName}` : 'Cast to a device'}>
+            {#if $castApiReady && episodes.length > 0}
+              <div class="castbar">
+                {#if $castConnected}
+                  <p class="castbar__state">
+                    Connected to <strong>{$castDeviceName}</strong> — pick an episode to play it there.
+                  </p>
+                  <button class="btn-ghost" on:click={endCastSession}>
                     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                      <path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zM21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
+                      <rect x="6" y="6" width="12" height="12" rx="1.5" />
                     </svg>
-                    <span>{casting ? 'Casting…' : ($castConnected ? $castDeviceName : ($castAvailable ? 'Cast' : 'Cast (searching…)'))}</span>
+                    <span>Stop casting</span>
                   </button>
-
-                  {#if $castConnected}
-                    <button class="cast-button" on:click={endCastSession} title="Stop casting">
-                      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                        <path d="M6 6h12v12H6z"/>
-                      </svg>
-                      <span>Stop</span>
-                    </button>
-                  {/if}
+                {:else}
+                  <button class="btn-ghost" on:click={connectCast} disabled={casting}>
+                    <CastIcon />
+                    <span>{$castAvailable ? 'Cast to a TV' : 'Looking for devices'}</span>
+                  </button>
                 {/if}
               </div>
-              {#if playError}
-                <p class="error-msg">{playError}</p>
-              {/if}
-              {#if $subtitlesDropped}
-                <p class="cast-note">Casting without subtitles — the receiver would not take the track.</p>
+            {/if}
+
+            {#if episodesLoading}
+              <div class="state"><div class="meter"></div><p>Loading episodes</p></div>
+            {:else if episodesError}
+              <p class="msg msg--error">{episodesError}</p>
+            {:else if episodes.length === 0}
+              <p class="msg">No episodes in this share.</p>
+            {:else}
+              <ul class="eplist">
+                {#each episodes as episode}
+                  <li>
+                    <button class="ep"
+                            class:ep--casting={$castConnected && castingEpisodeId === episode.id}
+                            disabled={casting}
+                            on:click={() => ($castConnected ? castEpisode(episode) : startEpisodePlayback(episode))}>
+                      <span class="ep__no">
+                        {#if episode.seasonNumber}S{episode.seasonNumber}E{episode.indexNumber || '?'}{:else}{episode.indexNumber || '?'}{/if}
+                      </span>
+                      <span class="ep__name">{episode.name}</span>
+                      <span class="ep__end">
+                        {#if episode.runtimeSeconds}
+                          <span class="ep__len">{formatDuration(episode.runtimeSeconds)}</span>
+                        {/if}
+                        {#if $castConnected}
+                          <CastIcon title="Plays on {$castDeviceName}" />
+                        {/if}
+                      </span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+
+            {#if playError}<p class="msg msg--error">{playError}</p>{/if}
+            {#if $subtitlesDropped}
+              <p class="msg">Casting without subtitles — the receiver would not take the track.</p>
+            {/if}
+          </div>
+        {:else}
+          <div class="play">
+            <button class="btn-primary btn-primary--lg" on:click={startPlayback}>
+              <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+              <span>Play</span>
+            </button>
+
+            {#if $castApiReady}
+              <button class="btn-ghost" on:click={startCast} disabled={casting}>
+                <CastIcon />
+                <span>{casting ? 'Casting' : ($castConnected ? $castDeviceName : ($castAvailable ? 'Cast to a TV' : 'Looking for devices'))}</span>
+              </button>
+              {#if $castConnected}
+                <button class="btn-ghost" on:click={endCastSession}>
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="6" y="6" width="12" height="12" rx="1.5" />
+                  </svg>
+                  <span>Stop</span>
+                </button>
               {/if}
             {/if}
-          {/if}
-        </div>
-      </div>
+          </div>
 
-      <div class="footer">
-        <span>Shared via Jellyfin Share</span>
+          {#if shareInfo.maxTotalPlays}
+            <!-- The play budget as a line under the button, not a widget. -->
+            <div class="fuel">
+              <div class="fuel__track">
+                <div class="fuel__fill"
+                     class:fuel__fill--low={getPlaysPercentage() <= 33}
+                     style="transform: scaleX({getPlaysPercentage() / 100})"></div>
+              </div>
+              <p class="fuel__label">{getPlaysRemaining()} of {shareInfo.maxTotalPlays} plays left</p>
+            </div>
+          {/if}
+
+          {#if playError}<p class="msg msg--error">{playError}</p>{/if}
+          {#if $subtitlesDropped}
+            <p class="msg">Casting without subtitles — the receiver would not take the track.</p>
+          {/if}
+        {/if}
       </div>
-    </div>
+    </section>
+
+    <!-- ── Credits. A spec list, not a card. ── -->
+    {#if (shareInfo.directors && shareInfo.directors.length) || (shareInfo.studios && shareInfo.studios.length) || (shareInfo.actors && shareInfo.actors.length) || techBits.length}
+      <section class="credits">
+        <dl>
+          {#if shareInfo.directors && shareInfo.directors.length > 0}
+            <div>
+              <dt>Direction</dt>
+              <dd>{shareInfo.directors.join(', ')}</dd>
+            </div>
+          {/if}
+          {#if shareInfo.studios && shareInfo.studios.length > 0}
+            <div>
+              <dt>Studio</dt>
+              <dd>{shareInfo.studios[0]}</dd>
+            </div>
+          {/if}
+          {#if shareInfo.actors && shareInfo.actors.length > 0}
+            <div>
+              <dt>Cast</dt>
+              <dd>
+                <ul class="cast">
+                  {#each (showFullCast ? shareInfo.actors : shareInfo.actors.slice(0, 6)) as actor}
+                    <li>
+                      <span class="cast__name">{actor.name}</span>
+                      {#if actor.role}<span class="cast__role">{actor.role}</span>{/if}
+                    </li>
+                  {/each}
+                </ul>
+                {#if shareInfo.actors.length > 6}
+                  <button class="link" on:click={() => (showFullCast = !showFullCast)}>
+                    {showFullCast ? 'Show fewer' : `Show all ${shareInfo.actors.length}`}
+                  </button>
+                {/if}
+              </dd>
+            </div>
+          {/if}
+          {#if techBits.length}
+            <div>
+              <dt>File</dt>
+              <dd class="mono">{techBits.join(' · ')}</dd>
+            </div>
+          {/if}
+        </dl>
+      </section>
+    {/if}
+
+    <!-- Ft2 · Inline single line -->
+    <footer class="foot">
+      <p>
+        Shared via <a class="foot-link" href="https://github.com/stanislavhannes/jellyfin-share-backend" target="_blank" rel="noopener noreferrer">Jellyfin Share</a>{#if shareInfo.maxTotalPlays}{' · '}{getPlaysRemaining()} of {shareInfo.maxTotalPlays} plays left{/if}{' · '}
+        {#if shareInfo.expiresAt}link expires <time datetime={shareInfo.expiresAt}>{formatAbsolute(shareInfo.expiresAt)}</time>{:else}link does not expire{/if}
+      </p>
+    </footer>
   {/if}
 </div>
 
 <style>
-  .share-container {
-    min-height: 100vh;
+  /* Hallmark · genre: atmospheric · macrostructure: 08 Photographic
+   * H6 photographic fold · nav: N9 edge-aligned · footer: Ft2 inline
+   * design-system: design.md · designed-as-app
+   */
+
+  .share { min-height: 100dvh; }
+
+  /* ── The fold ──────────────────────────────────────────────────────────
+     The artwork is the page above the break. The type is annotation laid in
+     the bottom-left corner, and the ground fades into paper so the poster
+     below can lap over the edge without a seam. */
+  .fold {
     position: relative;
-  }
-
-  .backdrop-container {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-  }
-
-  .backdrop {
-    position: absolute;
-    inset: -100px;
-    background-size: cover;
-    background-position: center top;
-    filter: blur(60px) saturate(1.3) brightness(0.4);
-    transform: scale(1.3);
-  }
-
-  .backdrop-gradient {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-      to bottom,
-      rgba(0, 0, 0, 0.3) 0%,
-      rgba(0, 0, 0, 0.6) 50%,
-      rgba(0, 0, 0, 0.95) 100%
-    );
-  }
-
-  .content {
-    position: relative;
-    z-index: 1;
-    min-height: 100vh;
-    padding: 2rem;
-    display: flex;
-    flex-direction: column;
-    opacity: 0;
-    transform: translateY(20px);
-    transition: all 0.6s ease;
-  }
-
-  .content.loaded {
-    opacity: 1;
-    transform: translateY(0);
-  }
-
-  .logo-container {
-    text-align: center;
-    margin-bottom: 1.5rem;
-    animation: fadeInDown 0.8s ease;
-  }
-
-  .logo {
-    max-width: 400px;
-    max-height: 120px;
-    width: auto;
-    filter: drop-shadow(0 4px 20px rgba(0,0,0,0.5));
-  }
-
-  @keyframes fadeInDown {
-    from {
-      opacity: 0;
-      transform: translateY(-20px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  .media-layout {
-    display: flex;
-    gap: 3rem;
-    max-width: 1100px;
-    margin: 0 auto;
-    flex: 1;
-    align-items: flex-start;
-  }
-
-  .poster-section {
-    flex-shrink: 0;
-    position: sticky;
-    top: 2rem;
-  }
-
-  .poster-wrapper {
-    position: relative;
-    width: 280px;
-    border-radius: 12px;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-height: clamp(19rem, 56dvh, 30rem);
     overflow: hidden;
-    box-shadow: 0 25px 80px -20px rgba(0, 0, 0, 0.8);
   }
 
-  .poster-wrapper img {
+  .fold--bare {
+    min-height: 0;
+    background: var(--color-paper-2);
+  }
+
+  .fold__image {
+    position: absolute;
+    inset: 0;
     width: 100%;
-    display: block;
-    opacity: 0;
-    transition: opacity 0.5s ease;
-  }
-
-  .poster-wrapper img.loaded {
-    opacity: 1;
-  }
-
-  .quality-badge {
-    position: absolute;
-    top: 12px;
-    right: 12px;
-    background: rgba(0, 0, 0, 0.8);
-    color: #00d4ff;
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    border: 1px solid rgba(0, 212, 255, 0.3);
-  }
-
-  .info-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .title {
-    font-size: 2.8rem;
-    font-weight: 800;
-    line-height: 1.1;
-    margin: 0;
-    color: #fff;
-    text-shadow: 0 4px 30px rgba(0,0,0,0.5);
-  }
-
-  .meta-badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.6rem;
-  }
-
-  .badge {
-    background: rgba(255,255,255,0.1);
-    border: 1px solid rgba(255,255,255,0.2);
-    padding: 0.35rem 0.75rem;
-    border-radius: 4px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: rgba(255,255,255,0.9);
-  }
-
-  .badge.rating-badge {
-    border-color: rgba(255,200,100,0.4);
-    color: rgb(255, 200, 100);
-  }
-
-  .badge.quality {
-    background: linear-gradient(135deg, rgba(0,212,255,0.2), rgba(0,150,200,0.2));
-    border-color: rgba(0,212,255,0.4);
-    color: #00d4ff;
-  }
-
-  .ratings-row {
-    display: flex;
-    gap: 2rem;
-    margin: 0.5rem 0;
-  }
-
-  .rating-item {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .rating-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .rating-icon.star {
-    color: #ffd700;
-  }
-
-  .rating-icon.star svg {
-    width: 24px;
-    height: 24px;
-  }
-
-  .rating-icon.tomato {
-    background: #6c757d;
-    color: white;
-    font-size: 0.7rem;
-    font-weight: 700;
-    padding: 4px 8px;
-    border-radius: 4px;
-  }
-
-  .rating-icon.tomato.fresh {
-    background: #fa320a;
-  }
-
-  .rating-value {
-    font-size: 1.4rem;
-    font-weight: 700;
-    color: #fff;
-  }
-
-  .rating-label {
-    font-size: 0.75rem;
-    color: rgba(255,255,255,0.5);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .genres {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-
-  .genre-tag {
-    background: transparent;
-    border: 1px solid rgba(255,255,255,0.3);
-    padding: 0.3rem 0.8rem;
-    border-radius: 20px;
-    font-size: 0.8rem;
-    color: rgba(255,255,255,0.8);
-    transition: all 0.2s;
-  }
-
-  .genre-tag:hover {
-    background: rgba(255,255,255,0.1);
-    border-color: rgba(255,255,255,0.5);
-  }
-
-  .overview {
-    color: rgba(255,255,255,0.75);
-    line-height: 1.7;
-    font-size: 0.95rem;
-    margin: 0;
-  }
-
-  .credits-row {
-    display: flex;
-    gap: 0.75rem;
-    font-size: 0.9rem;
-  }
-
-  .credits-label {
-    color: rgba(255,255,255,0.5);
-    min-width: 70px;
-  }
-
-  .credits-value {
-    color: rgba(255,255,255,0.9);
-  }
-
-  .cast-section {
-    margin-top: 0.5rem;
-  }
-
-  .cast-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 0.5rem;
-  }
-
-  .show-more-btn {
-    background: none;
-    border: none;
-    color: #00d4ff;
-    font-size: 0.8rem;
-    cursor: pointer;
-    padding: 0;
-  }
-
-  .show-more-btn:hover {
-    text-decoration: underline;
-  }
-
-  .cast-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-  }
-
-  .actor {
-    background: rgba(255,255,255,0.05);
-    border-radius: 8px;
-    padding: 0.5rem 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .actor-name {
-    font-size: 0.85rem;
-    color: rgba(255,255,255,0.9);
-  }
-
-  .actor-role {
-    font-size: 0.75rem;
-    color: rgba(255,255,255,0.5);
-  }
-
-  .quality-info {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.8rem;
-    color: rgba(255,255,255,0.5);
-    background: rgba(255,255,255,0.05);
-    padding: 0.6rem 1rem;
-    border-radius: 8px;
-    width: fit-content;
-  }
-
-  .quality-info svg {
-    width: 18px;
-    height: 18px;
-  }
-
-  .quality-info .divider {
-    opacity: 0.3;
-  }
-
-  .plays-info {
-    background: rgba(255,255,255,0.05);
-    border-radius: 10px;
-    padding: 1rem;
-    border: 1px solid rgba(255,255,255,0.08);
-  }
-
-  .plays-header {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 0.6rem;
-    font-size: 0.85rem;
-  }
-
-  .plays-label {
-    color: rgba(255,255,255,0.5);
-  }
-
-  .plays-count {
-    color: rgba(255,255,255,0.8);
-    font-weight: 600;
-  }
-
-  .plays-bar {
-    height: 6px;
-    background: rgba(255,255,255,0.1);
-    border-radius: 3px;
-    overflow: hidden;
-  }
-
-  .plays-fill {
     height: 100%;
-    background: linear-gradient(90deg, #00d4ff, #00ff88);
-    border-radius: 3px;
-    transition: width 0.3s ease;
+    object-fit: cover;
+    object-position: center 28%;
   }
 
-  .plays-fill.medium {
-    background: linear-gradient(90deg, #ffcc00, #ff9500);
+  .fold__scrim {
+    position: absolute;
+    inset: 0;
+    /* The top band holds at full strength past the nav row before it fades: a
+       backdrop can be bright (or white), and the wordmark and expiry have to
+       stay legible over any frame Jellyfin hands us, not just a dark one. */
+    background:
+      linear-gradient(to bottom, var(--scrim-strong) 0%, var(--scrim-strong) 9%, transparent 34%),
+      linear-gradient(to top, var(--color-paper) 2%, var(--scrim-strong) 34%, transparent 72%);
   }
 
-  .plays-fill.low {
-    background: linear-gradient(90deg, #ff6b6b, #ff4757);
-  }
+  .fold > .nav,
+  .fold > .plate { position: relative; z-index: var(--z-base); }
 
-  .track-selectors {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-    margin: 1rem 0;
-  }
-  .track-selector {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    min-width: 10rem;
-    flex: 1 1 10rem;
-  }
-  .track-selector label {
-    font-size: 0.8rem;
-    opacity: 0.7;
-  }
-  .track-selector select {
-    padding: 0.5rem;
-    border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    background: rgba(0, 0, 0, 0.4);
-    color: inherit;
-    font-size: 0.9rem;
-  }
-
-  .expiry-info {
+  /* N9 · Edge-aligned minimal */
+  .nav {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    color: rgba(255, 180, 100, 0.9);
-    font-size: 0.85rem;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-lg) var(--page-gutter);
+    padding-top: max(var(--space-lg), env(safe-area-inset-top));
   }
 
-  .expiry-info svg {
-    width: 18px;
-    height: 18px;
+  .wordmark {
+    font-family: var(--font-display);
+    font-size: var(--text-md);
+    letter-spacing: -0.01em;
+    color: var(--color-ink);
+    white-space: nowrap;
   }
 
-  .password-section {
-    margin-top: 1rem;
+  .nav__expiry,
+  .nav__expiry time {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-ink-2);
+    white-space: nowrap;
   }
 
-  .password-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    color: rgba(255,255,255,0.7);
-    font-size: 0.9rem;
-    margin-bottom: 1rem;
+  .plate {
+    align-self: end;
+    max-width: min(40rem, 100%);
+    padding: var(--space-2xl) var(--page-gutter);
   }
 
-  .password-header svg {
-    width: 20px;
-    height: 20px;
+  .plate__logo {
+    width: auto;
+    max-width: min(22rem, 78%);
+    max-height: 6rem;
+    object-fit: contain;
+    display: block;
+    margin-bottom: var(--space-sm);
   }
 
-  .input-group {
-    display: flex;
-    gap: 0.5rem;
+  .plate__title {
+    font-size: var(--text-display);
+    overflow-wrap: anywhere;
+    min-width: 0;
+    margin-bottom: var(--space-sm);
   }
 
-  .input-group input {
-    flex: 1;
-    padding: 1rem 1.25rem;
-    border: 2px solid rgba(255,255,255,0.15);
-    border-radius: 12px;
-    background: rgba(0,0,0,0.3);
-    color: #fff;
-    font-size: 1rem;
-    transition: all 0.2s;
+  .plate__title--long { font-size: var(--text-display-s); }
+
+  .caption {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.6;
+    color: var(--color-ink-2);
   }
 
-  .input-group input:focus {
-    outline: none;
-    border-color: rgba(0, 212, 255, 0.5);
-    background: rgba(0,0,0,0.4);
+  .caption--quiet {
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    letter-spacing: 0.04em;
+    color: var(--color-muted);
   }
 
-  .input-group input.error {
-    border-color: rgba(255, 107, 107, 0.5);
+  /* ── The stage: the print and the one action ───────────────────────────── */
+  .stage {
+    /* The fold's image and scrim are absolutely positioned, so they paint above
+       a later, un-positioned sibling. The stage laps up over the fold's edge —
+       it has to be positioned too, or the overlap swallows its first rows. */
+    position: relative;
+    z-index: var(--z-raised);
+    display: grid;
+    gap: var(--space-xl);
+    padding: var(--space-lg) var(--page-gutter) var(--space-xl);
   }
 
-  .input-group input::placeholder {
-    color: rgba(255,255,255,0.3);
-  }
-
-  .unlock-btn {
-    padding: 1rem 1.5rem;
-    border: none;
-    border-radius: 12px;
-    background: linear-gradient(135deg, #00d4ff, #0099cc);
-    color: #000;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.2s;
-    flex-shrink: 0;
-  }
-
-  .unlock-btn:hover:not(:disabled) {
-    transform: scale(1.02);
-    box-shadow: 0 8px 25px rgba(0, 212, 255, 0.3);
-  }
-
-  .unlock-btn:disabled {
-    opacity: 0.7;
-    cursor: not-allowed;
-  }
-
-  .btn-spinner {
-    width: 20px;
-    height: 20px;
-    border: 2px solid rgba(0,0,0,0.2);
-    border-top-color: #000;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  .play-row {
-    display: flex;
-    gap: 0.75rem;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-
-  .cast-button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.75rem 1.25rem;
-    border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    background: rgba(255, 255, 255, 0.08);
-    color: inherit;
-    font-size: 0.95rem;
-    cursor: pointer;
-  }
-  .cast-button:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.16);
-  }
-  .cast-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .cast-button svg {
-    width: 1.25rem;
-    height: 1.25rem;
-  }
-
-  .play-button {
-    display: inline-flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 1rem 2.5rem 1rem 1rem;
-    background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
-    color: #000;
-    border: none;
-    border-radius: 16px;
-    font-size: 1.15rem;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.3s;
-    margin-top: 0.5rem;
-    align-self: flex-start;
-  }
-
-  .play-button:hover {
-    transform: translateY(-2px) scale(1.02);
-    box-shadow: 0 20px 50px -15px rgba(0, 212, 255, 0.5);
-  }
-
-  .play-button:active {
-    transform: scale(0.98);
-  }
-
-  .play-icon {
-    width: 44px;
-    height: 44px;
-    background: rgba(0,0,0,0.15);
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .play-icon svg {
-    width: 22px;
-    height: 22px;
-    margin-left: 3px;
-  }
-
-  .error-msg {
-    color: #ff6b6b;
-    font-size: 0.85rem;
-    margin: 0.75rem 0 0 0;
-  }
-
-  /* Episodes Section */
-  .episodes-section {
-    margin-top: 1rem;
-  }
-
-  .episodes-header {
-    font-size: 1.2rem;
-    font-weight: 600;
-    color: rgba(255, 255, 255, 0.9);
-    margin: 0 0 1rem 0;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .episodes-count {
-    font-size: 0.9rem;
-    color: rgba(255, 255, 255, 0.5);
-    font-weight: 400;
-  }
-
-  .episodes-loading {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    color: rgba(255, 255, 255, 0.6);
-    font-size: 0.9rem;
-    padding: 1rem;
-  }
-
-  .loading-spinner {
-    width: 20px;
-    height: 20px;
-    border: 2px solid rgba(255, 255, 255, 0.2);
-    border-top-color: #00d4ff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  .episodes-empty {
-    color: rgba(255, 255, 255, 0.5);
-    font-size: 0.9rem;
-    padding: 1rem;
+  .print {
+    display: none;
+    position: relative;
     margin: 0;
   }
 
-  .episodes-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    max-height: 400px;
-    overflow-y: auto;
-    padding-right: 0.5rem;
-  }
-
-  .episodes-list::-webkit-scrollbar {
-    width: 6px;
-  }
-
-  .episodes-list::-webkit-scrollbar-track {
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 3px;
-  }
-
-  .episodes-list::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 3px;
-  }
-
-  .episodes-list::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.3);
-  }
-
-  .episode-card {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 0.75rem 1rem;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
-    cursor: pointer;
-    transition: all 0.2s ease;
+  .print img {
+    display: block;
     width: 100%;
-    text-align: left;
-    color: inherit;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    border-radius: var(--radius-card);
+    opacity: 0;
+    transition: opacity var(--dur-long) var(--ease-out);
   }
 
-  .episode-card:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(0, 212, 255, 0.3);
-    transform: translateX(4px);
+  .print img.is-loaded { opacity: 1; }
+
+  .print figcaption {
+    position: absolute;
+    inset: auto auto var(--space-xs) var(--space-xs);
+    padding: var(--space-3xs) var(--space-xs);
+    background: var(--color-paper);
+    color: var(--color-ink-2);
+    font-family: var(--font-outlier);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    border-radius: var(--radius-pill);
   }
 
-  .episode-card:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
+  .stage--noprint { grid-template-columns: minmax(0, 1fr); }
 
-  .episode-card.episode-casting {
-    border-color: rgba(0, 212, 255, 0.6);
-    background: rgba(0, 212, 255, 0.12);
-  }
-
-  .episodes-cast-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-    margin-bottom: 0.75rem;
-  }
-
-  .cast-note {
-    font-size: 0.85rem;
-    opacity: 0.75;
-    margin-top: 0.5rem;
-  }
-
-  .cast-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.9rem;
-    opacity: 0.85;
-  }
-
-  .cast-status svg {
-    width: 1.1rem;
-    height: 1.1rem;
-    color: #00d4ff;
-    flex-shrink: 0;
-  }
-
-  .episode-card:active {
-    transform: translateX(2px);
-  }
-
-  .episode-number {
-    width: 36px;
-    height: 36px;
-    background: rgba(0, 212, 255, 0.15);
-    border: 1px solid rgba(0, 212, 255, 0.3);
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 0.9rem;
-    color: #00d4ff;
-    flex-shrink: 0;
-  }
-
-  .episode-info {
-    flex: 1;
+  .act {
+    display: grid;
+    gap: var(--space-lg);
+    justify-items: start;
     min-width: 0;
   }
 
-  .episode-title {
-    font-size: 0.95rem;
-    font-weight: 500;
-    color: rgba(255, 255, 255, 0.9);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .lede {
+    max-width: var(--measure);
+    line-height: 1.65;
+    color: var(--color-ink-2);
   }
 
-  .episode-meta {
-    font-size: 0.8rem;
-    color: rgba(255, 255, 255, 0.5);
-    margin-top: 0.15rem;
-  }
-
-  .episode-play {
-    width: 32px;
-    height: 32px;
-    background: rgba(0, 212, 255, 0.2);
-    border-radius: 50%;
+  /* ── Controls ──────────────────────────────────────────────────────────── */
+  .tracks {
     display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-md);
+    width: 100%;
+  }
+
+  .field {
+    display: grid;
+    gap: var(--space-2xs);
+    min-width: 0;
+  }
+
+  label {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-ink-2);
+  }
+
+  select, input {
+    height: var(--control-h);
+    max-width: 100%;
+    padding-inline: var(--space-sm);
+    background: var(--color-paper-2);
+    color: var(--color-ink);
+    /* 1px in every state — the box never shifts on focus or error. */
+    border: var(--rule-hair) solid var(--color-rule);
+    border-radius: var(--radius-input);
+    outline: 2px solid transparent;
+    outline-offset: 1px;
+    transition: background-color var(--dur-micro) var(--ease-out),
+                border-color var(--dur-micro) var(--ease-out);
+  }
+
+  select { min-width: 11rem; cursor: pointer; }
+  input { font-family: var(--font-outlier); min-width: 0; flex: 1 1 11rem; }
+  input::placeholder { color: var(--color-neutral); }
+
+  @media (hover: hover) {
+    select:hover, input:hover { background: var(--color-paper-3); }
+  }
+
+  select:focus-visible, input:focus-visible {
+    outline-color: var(--color-focus);
+    border-color: var(--color-ink-2);
+  }
+
+  input[aria-invalid="true"] { border-color: var(--color-danger); }
+  select:disabled, input:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  .gate { width: 100%; max-width: 30rem; }
+
+  .gate__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .field__help {
+    min-height: 1lh;
+    font-size: var(--text-sm);
+    color: var(--color-muted);
+  }
+
+  .field__help--error { color: var(--color-danger); }
+
+  /* ── Buttons ───────────────────────────────────────────────────────────── */
+  .btn-primary, .btn-ghost {
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex-shrink: 0;
-    transition: all 0.2s ease;
+    gap: var(--space-xs);
+    height: var(--control-h);
+    padding-inline: var(--space-lg);
+    font-weight: 600;
+    white-space: nowrap;
+    border-radius: var(--radius-pill);
+    cursor: pointer;
+    transition: transform var(--dur-micro) var(--ease-out),
+                background-color var(--dur-micro) var(--ease-out),
+                color var(--dur-micro) var(--ease-out);
   }
 
-  .episode-play svg {
-    width: 14px;
-    height: 14px;
-    color: #00d4ff;
-    margin-left: 2px;
+  .btn-primary {
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+    border: none;
   }
 
-  .episode-play svg.cast-glyph {
-    width: 16px;
-    height: 16px;
-    margin-left: 0;
+  .btn-primary--lg {
+    height: 3.25rem;
+    padding-inline: var(--space-xl);
+    font-size: var(--text-md);
   }
 
-  .episode-card:hover .episode-play {
-    background: rgba(0, 212, 255, 0.4);
-    transform: scale(1.1);
+  .btn-primary svg { width: 1.15rem; height: 1.15rem; }
+
+  /* Icons never shrink the label or get squeezed by it. */
+  .btn-ghost :global(svg),
+  .btn-ghost svg { width: 1.05rem; height: 1.05rem; flex-shrink: 0; }
+
+  .btn-ghost {
+    background: none;
+    color: var(--color-ink-2);
+    border: var(--rule-hair) solid var(--color-rule);
   }
 
-  .footer {
-    text-align: center;
-    padding: 2rem;
-    color: rgba(255,255,255,0.2);
-    font-size: 0.8rem;
-    margin-top: auto;
+  @media (hover: hover) {
+    .btn-primary:hover:not(:disabled) { transform: translateY(-1px); }
+    .btn-ghost:hover:not(:disabled) { background: var(--color-paper-2); color: var(--color-ink); }
   }
 
-  @keyframes spin {
-    to { transform: rotate(360deg); }
+  .btn-primary:active:not(:disabled), .btn-ghost:active:not(:disabled) { transform: translateY(1px); }
+
+  /* Ring clears the accent fill so it has paper to contrast against. */
+  .btn-primary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 3px; }
+
+  .btn-primary:disabled, .btn-ghost:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+  .play {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
   }
 
-  @media (max-width: 900px) {
-    .media-layout {
-      flex-direction: column;
-      align-items: center;
-      text-align: center;
-    }
-
-    .poster-section {
-      position: static;
-    }
-
-    .poster-wrapper {
-      width: 200px;
-    }
-
-    .info-section {
-      align-items: center;
-    }
-
-    .title {
-      font-size: 2rem;
-    }
-
-    .meta-badges, .genres, .ratings-row {
-      justify-content: center;
-    }
-
-    .credits-row {
-      flex-direction: column;
-      gap: 0.25rem;
-    }
-
-    .credits-label {
-      min-width: unset;
-    }
-
-    .cast-list {
-      justify-content: center;
-    }
-
-    .quality-info {
-      margin: 0 auto;
-    }
-
-    .play-button {
-      align-self: center;
-    }
-
-    .input-group {
-      flex-direction: column;
-    }
-
-    .episodes-list {
-      max-height: 350px;
-    }
-
-    .episode-card:hover {
-      transform: none;
-    }
+  .link {
+    margin-top: var(--space-xs);
+    white-space: nowrap;
+    padding: 0;
+    background: none;
+    color: var(--color-accent);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    border: none;
+    border-bottom: var(--rule-hair) solid var(--color-accent-dim);
+    cursor: pointer;
   }
 
-  @media (max-width: 480px) {
-    .content {
-      padding: 1rem;
+  @media (hover: hover) {
+    .link:hover { border-bottom-color: var(--color-accent); }
+  }
+
+  .link:active { color: var(--color-ink); }
+
+  .link:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  /* ── The play budget: a line under the button, not a widget ────────────── */
+  .fuel {
+    display: grid;
+    gap: var(--space-xs);
+    width: 100%;
+    max-width: 18rem;
+  }
+
+  .fuel__track { height: 2px; background: var(--color-rule); }
+
+  .fuel__fill {
+    width: 100%;
+    height: 100%;
+    background: var(--color-accent);
+    transform-origin: left center;
+    transition: transform var(--dur-long) var(--ease-out);
+  }
+
+  .fuel__fill--low { background: var(--color-danger); }
+
+  .fuel__label {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-muted);
+  }
+
+  /* ── Episodes: an index, same voice as the admin index ─────────────────── */
+  .episodes { width: 100%; }
+
+  .episodes__head {
+    overflow-wrap: anywhere;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-xs);
+    font-size: var(--text-lg);
+    margin-bottom: var(--space-md);
+  }
+
+  .episodes__n {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    color: var(--color-muted);
+  }
+
+  .castbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+  }
+
+  .castbar__state {
+    font-size: var(--text-sm);
+    color: var(--color-muted);
+  }
+
+  .castbar__state strong { color: var(--color-accent); font-weight: 600; }
+
+  .eplist { list-style: none; margin: 0; padding: 0; width: 100%; }
+
+  .ep {
+    display: grid;
+    grid-template-columns: 4.25rem minmax(0, 1fr) auto;
+    gap: var(--space-md);
+    align-items: baseline;
+    width: 100%;
+    padding: var(--space-md) 0;
+    text-align: start;
+    background: none;
+    border: none;
+    border-bottom: var(--rule-hair) solid var(--color-rule-2);
+    cursor: pointer;
+    transition: transform var(--dur-micro) var(--ease-out);
+  }
+
+  @media (hover: hover) {
+    .ep:hover:not(:disabled) { transform: translateY(-1px); }
+    .ep:hover:not(:disabled) .ep__name { color: var(--color-accent); }
+  }
+
+  .ep:active:not(:disabled) { transform: translateY(1px); }
+
+  .ep:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  .ep--casting .ep__no { color: var(--color-accent); }
+
+  .ep__no {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+    color: var(--color-muted);
+  }
+
+  .ep__name {
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--color-ink);
+    overflow-wrap: anywhere;
+    transition: color var(--dur-micro) var(--ease-out);
+  }
+
+  .ep__end {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    color: var(--color-neutral);
+  }
+
+  .ep__end :global(svg) { width: 1rem; height: 1rem; flex-shrink: 0; }
+
+  /* While a receiver is connected the glyph is the row's promise, so it takes
+     the accent rather than sitting in the quiet grey. */
+  .ep--casting .ep__end,
+  .eplist .ep:not(:disabled) .ep__end :global(svg) { color: var(--color-accent); }
+
+  .ep__len {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-neutral);
+    white-space: nowrap;
+  }
+
+  /* ── Credits ───────────────────────────────────────────────────────────── */
+  .credits {
+    padding: var(--space-xl) var(--page-gutter) var(--space-xl);
+  }
+
+  .credits dl { display: grid; gap: var(--space-lg); margin: 0; }
+
+  .credits dl > div {
+    display: grid;
+    gap: var(--space-2xs);
+    padding-bottom: var(--space-md);
+    border-bottom: var(--rule-hair) solid var(--color-rule-2);
+  }
+
+  dt {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-neutral);
+  }
+
+  dd { margin: 0; min-width: 0; color: var(--color-ink-2); overflow-wrap: anywhere; }
+
+  .mono { font-family: var(--font-outlier); font-variant-numeric: tabular-nums; }
+
+  .cast {
+    list-style: none;
+    display: grid;
+    gap: var(--space-xs);
+    margin: 0;
+    padding: 0;
+  }
+
+  .cast__name { display: block; color: var(--color-ink); }
+
+  .cast__role {
+    display: block;
+    font-size: var(--text-sm);
+    color: var(--color-neutral);
+  }
+
+  /* ── Messages and loading ──────────────────────────────────────────────── */
+  .msg { font-size: var(--text-sm); color: var(--color-muted); }
+  .msg--error { color: var(--color-danger); }
+
+  .state {
+    display: grid;
+    gap: var(--space-sm);
+    justify-items: start;
+    padding-block: var(--space-lg);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+
+  .meter {
+    width: 7.5rem;
+    height: 2px;
+    background: var(--color-rule);
+    overflow: hidden;
+  }
+
+  .meter::after {
+    content: "";
+    display: block;
+    width: 40%;
+    height: 100%;
+    background: var(--color-accent);
+    animation: sweep 1.1s var(--ease-in-out) infinite;
+  }
+
+  .meter--inline {
+    width: 1.5rem;
+    background: var(--color-accent-ink);
+  }
+
+  .meter--inline::after { background: var(--color-accent-ink); }
+
+  @keyframes sweep {
+    0%   { transform: translateX(-110%); }
+    100% { transform: translateX(260%); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .meter::after { width: 100%; }
+  }
+
+  /* ── Ft2 · Inline single line ──────────────────────────────────────────── */
+  .foot {
+    padding: var(--space-md) var(--page-gutter) var(--space-lg);
+    padding-bottom: max(var(--space-lg), env(safe-area-inset-bottom));
+    border-top: var(--rule-hair) solid var(--color-rule-2);
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    color: var(--color-neutral);
+  }
+
+  /* ── Wider: the print laps over the photograph's edge ──────────────────── */
+  @media (min-width: 40rem) {
+    .plate { max-width: min(40rem, 68%); }
+
+    .stage {
+      grid-template-columns: minmax(0, 1fr) 11rem;
+      align-items: start;
+      padding-top: var(--space-lg);
     }
 
-    .poster-wrapper {
-      width: 160px;
+    .print {
+      display: block;
+      grid-column: 2;
+      grid-row: 1;
+      width: 11rem;
+      margin-top: -7rem;   /* the print alone laps the fold's edge */
+    }
+    .act { grid-column: 1; grid-row: 1; }
+
+    .credits dl > div {
+      grid-template-columns: 8.5rem minmax(0, 1fr);
+      gap: var(--space-md);
+      align-items: baseline;
     }
 
-    .title {
-      font-size: 1.5rem;
+    .cast { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-sm) var(--space-md); }
+  }
+
+  @media (min-width: 60rem) {
+    .stage {
+      grid-template-columns: minmax(0, 1fr) 13.5rem;
+      gap: var(--space-2xl);
+      padding-bottom: var(--space-xl);
     }
 
-    .logo {
-      max-width: 280px;
-    }
+    .print { width: 13.5rem; margin-top: -9rem; }
 
-    .episodes-list {
-      max-height: 300px;
-    }
+    .credits { padding-block: var(--space-2xl); }
 
-    .episode-card {
-      padding: 0.6rem 0.75rem;
-      gap: 0.75rem;
-    }
-
-    .episode-number {
-      width: 32px;
-      height: 32px;
-      font-size: 0.8rem;
-    }
-
-    .episode-title {
-      font-size: 0.9rem;
-    }
-
-    .episode-play {
-      width: 28px;
-      height: 28px;
-    }
-
-    .episode-play svg {
-      width: 12px;
-      height: 12px;
-    }
+    .cast { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
 </style>

@@ -229,21 +229,36 @@
 
 <svelte:window on:keydown={handleKeydown} />
 
-<div class="player-container">
-  <div class="player-header">
-    <h2>{title}</h2>
-    <button class="close-button" on:click={handleClose}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M18 6L6 18M6 6l12 12"/>
-      </svg>
-    </button>
-  </div>
+<div class="player">
+  <!-- The video is the page. Chrome floats over it and gets out of the way. -->
+  <header class="player__bar">
+    <h2 class="player__title">{title}</h2>
+    <div class="player__tools">
+      <button class="glyph" on:click={toggleFullscreen} title="Fullscreen (F)" aria-label="Toggle fullscreen">
+        {#if isFullscreen}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 3v3a2 2 0 01-2 2H3M21 8h-3a2 2 0 01-2-2V3M16 21v-3a2 2 0 012-2h3M3 16h3a2 2 0 012 2v3"/>
+          </svg>
+        {:else}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3"/>
+          </svg>
+        {/if}
+      </button>
+      <button class="glyph" on:click={handleClose} title="Back (Esc)" aria-label="Back to the share">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+  </header>
 
-  <div class="video-wrapper">
+  <div class="player__stage">
     {#if error}
-      <div class="error-overlay">
-        <p>{error}</p>
-        <button on:click={handleClose}>Go Back</button>
+      <div class="player__error">
+        <p class="player__error-head">Playback stopped</p>
+        <p class="player__error-body">{error}</p>
+        <button class="btn-back" on:click={handleClose}>Back to the share</button>
       </div>
     {/if}
 
@@ -273,139 +288,139 @@
       {/if}
     </video>
   </div>
-
-  <div class="player-controls">
-    <button on:click={toggleFullscreen} title="Toggle fullscreen (F)">
-      {#if isFullscreen}
-        <svg viewBox="0 0 24 24" fill="currentColor">
-          <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>
-        </svg>
-      {:else}
-        <svg viewBox="0 0 24 24" fill="currentColor">
-          <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
-        </svg>
-      {/if}
-    </button>
-  </div>
 </div>
 
 <style>
-  .player-container {
-    position: fixed;
-    inset: 0;
-    background: #000;
-    z-index: 1000;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .player-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1rem;
-    background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, transparent 100%);
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 10;
-  }
-
-  .player-header h2 {
-    font-size: 1.25rem;
-    font-weight: 600;
-    margin: 0;
-    color: #fff;
-    text-shadow: 0 2px 4px rgba(0,0,0,0.5);
-  }
-
-  .close-button {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    border: none;
-    background: rgba(255,255,255,0.1);
-    color: #fff;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.2s;
-  }
-
-  .close-button:hover {
-    background: rgba(255,255,255,0.2);
-  }
-
-  .close-button svg {
-    width: 24px;
-    height: 24px;
-  }
-
-  .video-wrapper {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  /* Hallmark · genre: atmospheric · macrostructure: none — the video is the page
+   * design-system: design.md · designed-as-app
+   */
+  .player {
     position: relative;
+    display: grid;
+    min-height: 100dvh;
+    background: var(--color-paper);
+  }
+
+  /* A scrim, not a bar: the chrome dissolves into the picture instead of
+     boxing it in. */
+  .player__bar {
+    position: absolute;
+    inset: 0 0 auto 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-md) var(--page-gutter) var(--space-2xl);
+    padding-top: max(var(--space-md), env(safe-area-inset-top));
+    background: linear-gradient(to bottom, var(--scrim-strong), transparent);
+    z-index: var(--z-raised);
+    pointer-events: none;
+  }
+
+  .player__bar > * { pointer-events: auto; }
+
+  .player__title {
+    font-size: var(--text-md);
+    line-height: 1.2;
+    color: var(--color-ink);
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+
+  .player__tools {
+    display: flex;
+    gap: var(--space-2xs);
+    flex-shrink: 0;
+  }
+
+  .glyph {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    background: color-mix(in oklch, var(--color-paper-2) 70%, transparent);
+    backdrop-filter: blur(10px);
+    color: var(--color-ink-2);
+    border: var(--rule-hair) solid var(--color-rule);
+    border-radius: var(--radius-pill);
+    cursor: pointer;
+    transition: color var(--dur-micro) var(--ease-out),
+                background-color var(--dur-micro) var(--ease-out);
+  }
+
+  .glyph::before { content: ""; position: absolute; inset: -0.35rem; }
+
+  .glyph svg { width: 1.1rem; height: 1.1rem; }
+
+  @media (hover: hover) {
+    .glyph:hover { color: var(--color-accent); background: var(--color-paper-3); }
+  }
+
+  .glyph:active { transform: translateY(1px); }
+
+  .glyph:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  .player__stage {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-height: 100dvh;
   }
 
   video {
     width: 100%;
-    height: 100%;
-    max-height: 100vh;
-    background: #000;
+    max-height: 100dvh;
+    background: var(--color-paper);
   }
 
-  .error-overlay {
+  .player__error {
     position: absolute;
     inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0,0,0,0.9);
-    color: #ff6b6b;
-    gap: 1rem;
+    display: grid;
+    align-content: center;
+    justify-items: start;
+    gap: var(--space-sm);
+    padding-inline: var(--page-gutter);
+    background: var(--scrim-strong);
+    z-index: var(--z-dropdown);
   }
 
-  .error-overlay button {
-    padding: 0.75rem 1.5rem;
-    background: #333;
-    color: #fff;
+  .player__error-head {
+    font-family: var(--font-display);
+    font-size: var(--text-xl);
+    color: var(--color-ink);
+  }
+
+  .player__error-body {
+    max-width: 48ch;
+    color: var(--color-muted);
+  }
+
+  .btn-back {
+    margin-top: var(--space-md);
+    height: var(--control-h);
+    padding-inline: var(--space-lg);
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+    font-weight: 600;
+    white-space: nowrap;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--radius-pill);
     cursor: pointer;
+    transition: transform var(--dur-micro) var(--ease-out);
   }
 
-  .player-controls {
-    position: absolute;
-    bottom: 80px;
-    right: 1rem;
-    z-index: 10;
+  @media (hover: hover) {
+    .btn-back:hover { transform: translateY(-1px); }
   }
 
-  .player-controls button {
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    border: none;
-    background: rgba(255,255,255,0.1);
-    color: #fff;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.2s;
-  }
+  .btn-back:active { transform: translateY(1px); }
+  .btn-back:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 3px; }
 
-  .player-controls button:hover {
-    background: rgba(255,255,255,0.2);
-  }
-
-  .player-controls svg {
-    width: 24px;
-    height: 24px;
+  video::cue {
+    background: var(--scrim-strong);
+    color: var(--color-ink);
+    font-family: var(--font-body);
   }
 </style>

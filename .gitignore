@@ -30,3 +30,9 @@ web/dist/
 # Test coverage
 coverage.out
 coverage.html
+
+# local design preview scaffolding (not production)
+web/.preview/
+
+# Hallmark design-skill bookkeeping, not project documentation
+.hallmark/
