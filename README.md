@@ -40,7 +40,7 @@ A secure, self-hosted solution for creating temporary, shareable links to your J
 ### Prerequisites
 
 - Docker and Docker Compose
-- Jellyfin server with API key
+- Jellyfin server with API key (10.11 or 12.x — both are supported)
 - PostgreSQL (included in docker-compose)
 
 ### 1. Clone and Configure

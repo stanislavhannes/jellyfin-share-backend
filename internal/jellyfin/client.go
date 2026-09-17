@@ -167,7 +167,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 // Jellyfin echoes a request's query params back inside generated HLS manifests, and
 // the stream proxy forwards those manifests verbatim to untrusted share viewers.
 func (c *Client) AuthorizeRequest(req *http.Request) {
-	req.Header.Set("X-Emby-Token", c.apiKey)
+	// Jellyfin 12 dropped the X-Emby-Token header and the api_key query parameter;
+	// only this form is still accepted. Jellyfin 10.11 accepts it too, so one
+	// header covers both.
+	req.Header.Set("Authorization", fmt.Sprintf("MediaBrowser Token=%q", c.apiKey))
 }
 
 func (c *Client) GetItem(ctx context.Context, itemID string) (*ItemInfo, error) {
