@@ -33,7 +33,16 @@
       return;
     }
 
-    if (Hls.isSupported()) {
+    // Prefer native HLS where the browser also has AirPlay. hls.js plays through
+    // MediaSource, and MediaSource playback cannot be sent to an AirPlay receiver
+    // — so on Safari, choosing hls.js would silently remove the only casting route
+    // that browser has. The presence of the AirPlay API is the precise test: it is
+    // what makes the trade-off matter.
+    const hasAirPlay = typeof window !== 'undefined'
+      && 'WebKitPlaybackTargetAvailabilityEvent' in window;
+    const nativeHls = !!videoElement.canPlayType('application/vnd.apple.mpegurl');
+
+    if (Hls.isSupported() && !(hasAirPlay && nativeHls)) {
       hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
@@ -67,13 +76,20 @@
           }
         }
       });
-    } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari native HLS support
+    } else if (nativeHls) {
+      // Native HLS: Safari, and the path that keeps AirPlay available
       videoElement.src = playbackData.playbackUrl;
       videoElement.addEventListener('loadedmetadata', () => {
         videoElement.play().catch(e => {
           console.log('Autoplay prevented:', e);
         });
+      });
+      // The hls.js branch reports fatal errors through its own handler; this one
+      // had none, so a revoked share or a timed-out session left a blank player
+      // with no message. Safari is routed here now, so it needs one.
+      videoElement.addEventListener('error', () => {
+        error = 'Playback error occurred';
+        cleanup();
       });
     } else {
       error = 'HLS playback is not supported in this browser';
@@ -196,11 +212,15 @@
       </div>
     {/if}
 
+    <!-- x-webkit-airplay covers Safari, where Google Cast does not exist: Safari
+         takes the native HLS path below rather than MediaSource, so the system
+         AirPlay button appears in the player controls on its own. -->
     <video
       bind:this={videoElement}
       controls
       playsinline
       autoplay
+      x-webkit-airplay="allow"
     >
       {#if playbackData?.subtitleUrl}
         <!-- Text subtitles arrive as a sidecar, so the video needed no re-encode
