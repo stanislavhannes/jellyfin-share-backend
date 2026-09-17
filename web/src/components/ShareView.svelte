@@ -1,6 +1,7 @@
 <script>
   import { onMount, createEventDispatcher } from 'svelte';
   import Player from './Player.svelte';
+  import { initCast, castMedia, castAvailable, castConnected, castDeviceName } from '../cast.js';
 
   export let shareInfo;
   export let token;
@@ -28,6 +29,7 @@
   let episodesError = '';
 
   onMount(async () => {
+    initCast();
     const timeout = setTimeout(() => {
       imageLoaded = true;
     }, 500);
@@ -173,6 +175,45 @@
       if (t?.language) p.push('subtitleLanguage=' + encodeURIComponent(t.language));
     }
     return '?' + p.join('&');
+  }
+
+  let casting = false;
+
+  // The receiver decides what it can decode, not this browser, so the codec
+  // negotiation is bypassed and h264 is requested outright. Every Cast device
+  // handles it, where HEVC depends on the model. Going through /play once keeps
+  // this to a single play against the share's limit.
+  async function startCast() {
+    playError = '';
+    casting = true;
+    try {
+      const p = ['videoCodecs=h264'];
+      if (selectedAudioIndex != null) p.push('audioStreamIndex=' + selectedAudioIndex);
+      if (selectedSubtitleIndex != null) p.push('subtitleStreamIndex=' + selectedSubtitleIndex);
+      const response = await fetch(`/api/public/shares/${token}/play?${p.join('&')}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        playError = data.error || 'Failed to start playback';
+        return;
+      }
+      const data = await response.json();
+      await castMedia({
+        url: data.playbackUrl,
+        subtitleUrl: data.subtitleUrl,
+        title: shareInfo.title,
+        subtitle: shareInfo.year ? String(shareInfo.year) : '',
+        posterUrl: shareInfo.posterUrl,
+        durationSeconds: shareInfo.runtimeSeconds
+      });
+    } catch (e) {
+      playError = e?.message || 'Could not cast to the device';
+    } finally {
+      casting = false;
+    }
   }
 
   async function startPlayback() {
@@ -528,14 +569,26 @@
                 {/if}
               </div>
             {:else}
-              <button class="play-button" on:click={startPlayback}>
-                <div class="play-icon">
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M8 5v14l11-7z"/>
-                  </svg>
-                </div>
-                <span>Play Now</span>
-              </button>
+              <div class="play-row">
+                <button class="play-button" on:click={startPlayback}>
+                  <div class="play-icon">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                  </div>
+                  <span>Play Now</span>
+                </button>
+
+                {#if $castAvailable}
+                  <button class="cast-button" on:click={startCast} disabled={casting}
+                          title={$castConnected ? `Cast to ${$castDeviceName}` : 'Cast to a device'}>
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zM21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
+                    </svg>
+                    <span>{casting ? 'Casting…' : ($castConnected ? $castDeviceName : 'Cast')}</span>
+                  </button>
+                {/if}
+              </div>
               {#if playError}
                 <p class="error-msg">{playError}</p>
               {/if}
@@ -1042,6 +1095,37 @@
     border-top-color: #000;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
+  }
+
+  .play-row {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .cast-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.08);
+    color: inherit;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  .cast-button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.16);
+  }
+  .cast-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .cast-button svg {
+    width: 1.25rem;
+    height: 1.25rem;
   }
 
   .play-button {

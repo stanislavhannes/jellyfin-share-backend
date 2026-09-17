@@ -339,6 +339,11 @@ Jellyfin before being fixed; the numbers below are measured.
   the video needs no re-encode and the viewer can switch them off.
 - Audio and subtitle tracks are selectable, and a share can carry its own quality
   ceiling.
+- **Google Cast.** A Cast button appears on the share page when a receiver is on
+  the network. The receiver fetches the stream itself, so the page must be served
+  over HTTPS — browsers dropped the Presentation API on plain HTTP — and
+  `JFSHARE_PUBLIC_BASE_URL` must be an address the Cast device can reach. On an
+  http:// deployment the button simply never appears.
 
 **Fixes**
 
