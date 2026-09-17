@@ -2,6 +2,10 @@
 
 A secure, self-hosted solution for creating temporary, shareable links to your Jellyfin media content. Share movies and TV episodes with friends and family without giving them access to your Jellyfin server.
 
+This is a fork of [monxas/jellyfin-share-backend](https://github.com/monxas/jellyfin-share-backend)
+with Jellyfin 12 support, two security fixes and a reworked streaming path — see
+[What this fork changes](#what-this-fork-changes).
+
 ## Features
 
 - **Temporary Share Links** - Create time-limited links that automatically expire
@@ -46,7 +50,7 @@ A secure, self-hosted solution for creating temporary, shareable links to your J
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/monxas/jellyfin-share-backend.git
+git clone https://github.com/stanislavhannes/jellyfin-share-backend.git
 cd jellyfin-share-backend
 
 # Copy example environment file
@@ -303,7 +307,51 @@ cd web && npm run build
 
 ## Companion Plugin
 
-For seamless integration, install the [Jellyfin Share Plugin](https://github.com/monxas/jellyfin-share-plugin) to create share links directly from the Jellyfin UI.
+For seamless integration, install the [Jellyfin Share Plugin](https://github.com/stanislavhannes/jellyfin-share-plugin) to create share links directly from the Jellyfin UI.
+
+## What this fork changes
+
+Relative to the upstream project. Every item was reproduced against a live
+Jellyfin before being fixed; the numbers below are measured.
+
+**Security**
+
+- The Jellyfin API key was readable by anyone holding a share link. Jellyfin
+  echoes a request's query parameters back into the HLS manifests it generates,
+  and the proxy forwarded those verbatim, so `api_key` appeared in the
+  `master.m3u8` a viewer receives. The key taken from a playlist returned every
+  account with `IsAdministrator: true`. Now header-only.
+- Any share link could stream any item in the library: `ServeStream` took the
+  item id from the viewer's query string. A share for one film returned another
+  film's segments, 570 KB of real video. The item — and the media source, codec,
+  bitrate and track selection — is now pinned to the session at play time.
+
+**Playback**
+
+- Quality collapsed to 416x234 on any transcode, because no target bitrate was
+  sent and Jellyfin falls back to 128 kbit/s. The target is now derived from the
+  source and scaled for the codec being encoded into.
+- AV1 and HEVC reached the browser undecodable — stream-copied into mpegts, which
+  produced a black picture with audio only. The codec is now negotiated with the
+  viewer's browser: a source the browser can decode is still copied, byte for
+  byte.
+- Text subtitles are delivered as a WebVTT sidecar instead of being burned in, so
+  the video needs no re-encode and the viewer can switch them off.
+- Audio and subtitle tracks are selectable, and a share can carry its own quality
+  ceiling.
+
+**Fixes**
+
+- Series shares listed seasons and could not play any of them.
+- Share analytics always returned 500 — the query named a table and a column that
+  do not exist.
+- `JFSHARE_PORT` was ignored by the healthcheck, leaving the container
+  permanently unhealthy.
+- Shares can be created without an expiry.
+
+**Compatibility**
+
+Works against Jellyfin 10.11 and 12.x with the same build.
 
 ## License
 
