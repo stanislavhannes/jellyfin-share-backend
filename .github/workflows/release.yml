@@ -1,6 +1,8 @@
 name: Release
 
 on:
+  workflow_dispatch:
+
   push:
     tags: ['v*']
 
@@ -61,7 +63,7 @@ jobs:
             ## Docker Image
 
             ```bash
-            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
             ```
 
             See [README](https://github.com/${{ github.repository }}#quick-start) for setup instructions.
