@@ -9,6 +9,11 @@
 
 import { writable } from 'svelte/store';
 
+// The SDK is loaded and initialised. Separate from castAvailable on purpose:
+// the button is shown as soon as casting is possible at all, so a viewer with no
+// receiver on the network gets Chrome's own "no devices found" dialog instead of
+// a button that silently never appears.
+export const castApiReady = writable(false);
 export const castAvailable = writable(false);
 export const castConnected = writable(false);
 export const castDeviceName = writable('');
@@ -47,6 +52,7 @@ export function initCast() {
         castDeviceName.set(session ? session.getCastDevice().friendlyName : '');
       };
 
+      castApiReady.set(true);
       applyState(context.getCastState());
       context.addEventListener(
         cast.framework.CastContextEventType.CAST_STATE_CHANGED,
