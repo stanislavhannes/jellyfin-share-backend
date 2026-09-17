@@ -48,6 +48,9 @@ type ShareSession struct {
 	MediaSourceID       sql.NullString `db:"media_source_id" json:"-"`
 	// MaxVideoHeight is the share's quality ceiling, resolved at play time.
 	MaxVideoHeight      sql.NullInt64  `db:"max_video_height" json:"-"`
+	// ContinuationDepth counts how far this session is into a chain started by a
+	// single play. Autoplay increments it; a viewing started by hand is 0.
+	ContinuationDepth   int            `db:"continuation_depth" json:"-"`
 }
 
 func (s *ShareSession) IsActive(heartbeatTimeout time.Duration) bool {

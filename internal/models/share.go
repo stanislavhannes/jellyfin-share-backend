@@ -91,10 +91,19 @@ func (s *Share) RequiresPassword() bool {
 }
 
 func (s *Share) CanStartNewPlay() bool {
-	if !s.IsValid() {
+	if s.MaxTotalPlays.Valid && int64(s.TotalPlays) >= s.MaxTotalPlays.Int64 {
 		return false
 	}
-	if s.MaxTotalPlays.Valid && int64(s.TotalPlays) >= s.MaxTotalPlays.Int64 {
+	return s.CanContinuePlay()
+}
+
+// CanContinuePlay is CanStartNewPlay without the total-play limit. An episode
+// started by autoplay carries on a viewing that was counted when it began, so it
+// must not be charged again - otherwise a link offered as "three plays" would
+// mean three episodes and die mid-season. Everything else still applies: the
+// share must be valid, and a continuation is still a viewer.
+func (s *Share) CanContinuePlay() bool {
+	if !s.IsValid() {
 		return false
 	}
 	if s.MaxConcurrentViewers.Valid && int64(s.CurrentConcurrentViewers) >= s.MaxConcurrentViewers.Int64 {
