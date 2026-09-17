@@ -58,6 +58,8 @@ export function initCast() {
         castDeviceName.set(session?.getCastDevice()?.friendlyName || '');
       };
 
+      watchPlayer();
+
       castApiReady.set(true);
       applyState(context.getCastState());
       context.addEventListener(
@@ -161,7 +163,7 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
     await load(false);
   }
 
-  watchForEnd(session);
+  watchMedia(session);
   return session;
 }
 
@@ -170,22 +172,49 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
 // need every episode's URL up front, and each of those is a pinned session - ten
 // sessions opened the moment playback starts, all counting as viewers. Keeping
 // the sender in charge costs nothing but a browser tab that stays open.
-function watchForEnd(session) {
-  const media = session.getMediaSession();
-  if (!media) return;
+//
+// Two detectors, because one is not dependable. RemotePlayerController survives
+// the media session it is watching, which an update listener bound to a single
+// media object does not - that object is torn down at the very moment the episode
+// ends, which is the moment we care about. The media listener stays as the second
+// route in case the player state arrives without a media session to read the
+// reason from. reportEnded settles which of them got there first.
+let endedHandler = null;
+let lastEndedMediaId = null;
 
-  const listener = (isAlive) => {
-    // FINISHED distinguishes an episode that ran to its end from one the viewer
-    // stopped, or a receiver that was disconnected. Only the first should advance.
-    const finished = media.idleReason === chrome.cast.media.IdleReason.FINISHED;
-    if (isAlive && !finished) return;
-    media.removeUpdateListener(listener);
-    if (finished && endedHandler) endedHandler();
-  };
-  media.addUpdateListener(listener);
+function reportEnded(mediaSessionId) {
+  // The end can be reported by both routes, and a state can repeat. Advancing
+  // twice would skip an episode, so each media session ends the series once.
+  if (mediaSessionId != null && mediaSessionId === lastEndedMediaId) return;
+  lastEndedMediaId = mediaSessionId;
+  if (endedHandler) endedHandler();
 }
 
-let endedHandler = null;
+function watchPlayer() {
+  const player = new cast.framework.RemotePlayer();
+  const controller = new cast.framework.RemotePlayerController(player);
+  controller.addEventListener(
+    cast.framework.RemotePlayerEventType.PLAYER_STATE_CHANGED,
+    () => {
+      if (player.playerState !== chrome.cast.media.PlayerState.IDLE) return;
+      const media = context?.getCurrentSession()?.getMediaSession();
+      // FINISHED is what separates an episode that ran out from one the viewer
+      // stopped, or a receiver that was disconnected. Only the first advances.
+      console.debug('Cast: receiver idle', media?.idleReason);
+      if (media?.idleReason !== chrome.cast.media.IdleReason.FINISHED) return;
+      reportEnded(media.mediaSessionId);
+    }
+  );
+}
+
+function watchMedia(session) {
+  const media = session.getMediaSession();
+  if (!media) return;
+  const id = media.mediaSessionId;
+  media.addUpdateListener(() => {
+    if (media.idleReason === chrome.cast.media.IdleReason.FINISHED) reportEnded(id);
+  });
+}
 
 // Registers what to do when an episode finishes on the receiver. One handler at a
 // time, replaced rather than stacked, so a re-registration cannot advance twice.

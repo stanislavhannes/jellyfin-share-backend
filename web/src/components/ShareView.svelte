@@ -255,10 +255,7 @@
 
   // Stop once the receiver is gone, so a finished cast does not keep a session
   // alive and occupying a concurrent-viewer slot.
-  $: if (!$castConnected) {
-    stopCastHeartbeat();
-    castingEpisodeId = null;
-  }
+  $: if (!$castConnected) stopCastHeartbeat();
 
   // h264 is requested outright rather than negotiated: every Cast device decodes
   // it, where HEVC depends on the model. Going through /play once keeps this to a
@@ -418,6 +415,7 @@
   // matters: it releases the old session and clears the field on the way.
   async function advanceCast() {
     const next = nextEpisode(castingEpisodeId);
+    console.debug('Cast: episode finished', castingEpisodeId, '-> next', next?.id || 'none');
     if (!next) {
       await endCastSession();
       return;
@@ -787,7 +785,7 @@
                   <div class="episodes-list">
                     {#each episodes as episode}
                       <button class="episode-card"
-                              class:episode-casting={castingEpisodeId === episode.id}
+                              class:episode-casting={$castConnected && castingEpisodeId === episode.id}
                               disabled={casting}
                               on:click={() => ($castConnected ? castEpisode(episode) : startEpisodePlayback(episode))}>
                         <div class="episode-number">
