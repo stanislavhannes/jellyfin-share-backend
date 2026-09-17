@@ -196,11 +196,15 @@
       </div>
     {/if}
 
+    <!-- x-webkit-airplay covers Safari, where Google Cast does not exist: Safari
+         takes the native HLS path below rather than MediaSource, so the system
+         AirPlay button appears in the player controls on its own. -->
     <video
       bind:this={videoElement}
       controls
       playsinline
       autoplay
+      x-webkit-airplay="allow"
     >
       {#if playbackData?.subtitleUrl}
         <!-- Text subtitles arrive as a sidecar, so the video needed no re-encode
