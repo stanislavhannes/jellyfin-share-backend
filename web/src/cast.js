@@ -17,6 +17,9 @@ export const castApiReady = writable(false);
 export const castAvailable = writable(false);
 export const castConnected = writable(false);
 export const castDeviceName = writable('');
+// Set when the receiver would not take the subtitle track and the video was sent
+// without it, so the page can say so instead of leaving the viewer guessing.
+export const subtitlesDropped = writable(false);
 
 const SDK_SRC = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
 
@@ -129,11 +132,35 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
     info.tracks = [track];
   }
 
-  const request = new chrome.cast.media.LoadRequest(info);
-  request.autoplay = true;
-  if (subtitleUrl) request.activeTrackIds = [1];
+  const load = (withTracks) => {
+    const req = new chrome.cast.media.LoadRequest(info);
+    req.autoplay = true;
+    if (withTracks) req.activeTrackIds = [1];
+    return session.loadMedia(req);
+  };
 
-  await session.loadMedia(request);
+  subtitlesDropped.set(false);
+
+  if (info.tracks) {
+    try {
+      await load(true);
+    } catch (e) {
+      // Google's Default Media Receiver does not sideload text tracks onto an HLS
+      // stream - it expects subtitles inside the manifest - and refuses the whole
+      // load rather than just the track. That is a refusal of the video too, so
+      // the viewer gets a connected device and no picture.
+      //
+      // Dropping the track and loading again is the difference between subtitles
+      // and nothing at all. The page says so rather than quietly losing them.
+      console.warn('Cast refused the media with a subtitle track; retrying without', e);
+      delete info.tracks;
+      await load(false);
+      subtitlesDropped.set(true);
+    }
+  } else {
+    await load(false);
+  }
+
   watchForEnd(session);
   return session;
 }
@@ -166,7 +193,7 @@ export function onCastEnded(fn) {
   endedHandler = fn;
 }
 
-function toBcp47(code) {
+export function toBcp47(code) {
   if (!code) return 'und';
   try {
     return Intl.getCanonicalLocales(code)[0] || 'und';
@@ -198,10 +225,18 @@ export function stopCast() {
 export function describeCastError(e) {
   const code = typeof e === 'string' ? e : (e?.code || e?.message);
   if (code === 'cancel' || code === chrome?.cast?.ErrorCode?.CANCEL) return null;
+
+  // Anything unexpected reaches the console in full. The message below is all the
+  // viewer sees, and "could not cast" on its own is impossible to act on - for a
+  // failure that only shows up on real hardware, the code is the whole diagnosis.
+  console.error('Cast failed', code, e);
+
   switch (code) {
     case 'timeout': return 'The cast device did not respond';
     case 'receiver_unavailable': return 'No cast device could be reached';
     case 'session_error': return 'The cast device refused the media';
-    default: return 'Could not cast to the device';
+    case 'load_failed': return 'The cast device could not load the stream';
+    case 'invalid_parameter': return 'The cast device rejected the request';
+    default: return `Could not cast to the device (${code || 'unknown error'})`;
   }
 }

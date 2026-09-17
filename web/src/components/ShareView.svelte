@@ -2,7 +2,8 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import Player from './Player.svelte';
   import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError, onCastEnded,
-           castApiReady, castAvailable, castConnected, castDeviceName } from '../cast.js';
+           toBcp47, subtitlesDropped, castApiReady, castAvailable, castConnected,
+           castDeviceName } from '../cast.js';
 
   export let shareInfo;
   export let token;
@@ -25,6 +26,9 @@
   let currentPlayingTitle = '';
   // Which episode the browser player is on, so autoplay knows where it is.
   let currentEpisodeId = null;
+
+  // The track the viewer picked, so the player can name it and switch it on.
+  $: chosenSubtitle = (shareInfo.subtitleTracks || []).find((t) => t.index === selectedSubtitleIndex);
 
   // Episode list for Season/Series
   let episodes = [];
@@ -487,6 +491,8 @@
          has to be rebuilt around it rather than handed a new URL mid-flight. -->
     {#key playbackData.sessionId}
       <Player {playbackData} title={currentPlayingTitle || shareInfo.title}
+              subtitleLabel={chosenSubtitle ? trackLabel(chosenSubtitle, 'Subtitle') : 'Subtitles'}
+              subtitleLanguage={toBcp47(chosenSubtitle?.language)}
               on:close={handlePlayerClose} on:ended={handlePlaybackEnded} />
     {/key}
   {:else}
@@ -816,6 +822,9 @@
                 {#if playError}
                   <p class="error-msg">{playError}</p>
                 {/if}
+                {#if $subtitlesDropped}
+                  <p class="cast-note">Casting without subtitles — the receiver would not take the track.</p>
+                {/if}
               </div>
             {:else}
               <div class="play-row">
@@ -849,6 +858,9 @@
               </div>
               {#if playError}
                 <p class="error-msg">{playError}</p>
+              {/if}
+              {#if $subtitlesDropped}
+                <p class="cast-note">Casting without subtitles — the receiver would not take the track.</p>
               {/if}
             {/if}
           {/if}
@@ -1544,6 +1556,12 @@
     gap: 0.75rem;
     flex-wrap: wrap;
     margin-bottom: 0.75rem;
+  }
+
+  .cast-note {
+    font-size: 0.85rem;
+    opacity: 0.75;
+    margin-top: 0.5rem;
   }
 
   .cast-status {
