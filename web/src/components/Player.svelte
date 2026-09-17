@@ -33,7 +33,16 @@
       return;
     }
 
-    if (Hls.isSupported()) {
+    // Prefer native HLS where the browser also has AirPlay. hls.js plays through
+    // MediaSource, and MediaSource playback cannot be sent to an AirPlay receiver
+    // — so on Safari, choosing hls.js would silently remove the only casting route
+    // that browser has. The presence of the AirPlay API is the precise test: it is
+    // what makes the trade-off matter.
+    const hasAirPlay = typeof window !== 'undefined'
+      && 'WebKitPlaybackTargetAvailabilityEvent' in window;
+    const nativeHls = !!videoElement.canPlayType('application/vnd.apple.mpegurl');
+
+    if (Hls.isSupported() && !(hasAirPlay && nativeHls)) {
       hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
@@ -67,8 +76,8 @@
           }
         }
       });
-    } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari native HLS support
+    } else if (nativeHls) {
+      // Native HLS: Safari, and the path that keeps AirPlay available
       videoElement.src = playbackData.playbackUrl;
       videoElement.addEventListener('loadedmetadata', () => {
         videoElement.play().catch(e => {
