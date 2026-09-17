@@ -6,6 +6,24 @@ This is a fork of [monxas/jellyfin-share-backend](https://github.com/monxas/jell
 with Jellyfin 12 support, two security fixes and a reworked streaming path — see
 [What this fork changes](#what-this-fork-changes).
 
+## What it looks like
+
+A shared film. The page leads with the artwork Jellyfin already holds, states the
+link's terms in words rather than badges, and lets the viewer pick audio and
+subtitle tracks before anything starts playing.
+
+![A shared film: backdrop, poster, track selection, and Play and Cast buttons](docs/screenshots/share-movie.png)
+
+A shared series lists its episodes, each one startable on its own — or sent to a
+television once a receiver is connected.
+
+![A shared series with its episode list](docs/screenshots/share-series.png)
+
+The admin surface is one scannable index of every link handed out: what it points
+at, whether it is still live, how often it has been played, and when it expires.
+
+![The admin dashboard listing every share with its status, plays and expiry](docs/screenshots/admin-dashboard.png)
+
 ## Features
 
 - **Temporary Share Links** - Create time-limited links that automatically expire
