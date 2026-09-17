@@ -17,6 +17,9 @@ export const castApiReady = writable(false);
 export const castAvailable = writable(false);
 export const castConnected = writable(false);
 export const castDeviceName = writable('');
+// Set when the receiver would not take the subtitle track and the video was sent
+// without it, so the page can say so instead of leaving the viewer guessing.
+export const subtitlesDropped = writable(false);
 
 const SDK_SRC = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
 
@@ -54,6 +57,8 @@ export function initCast() {
         const session = context.getCurrentSession();
         castDeviceName.set(session?.getCastDevice()?.friendlyName || '');
       };
+
+      watchPlayer();
 
       castApiReady.set(true);
       applyState(context.getCastState());
@@ -129,15 +134,95 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
     info.tracks = [track];
   }
 
-  const request = new chrome.cast.media.LoadRequest(info);
-  request.autoplay = true;
-  if (subtitleUrl) request.activeTrackIds = [1];
+  const load = (withTracks) => {
+    const req = new chrome.cast.media.LoadRequest(info);
+    req.autoplay = true;
+    if (withTracks) req.activeTrackIds = [1];
+    return session.loadMedia(req);
+  };
 
-  await session.loadMedia(request);
+  subtitlesDropped.set(false);
+
+  if (info.tracks) {
+    try {
+      await load(true);
+    } catch (e) {
+      // Google's Default Media Receiver does not sideload text tracks onto an HLS
+      // stream - it expects subtitles inside the manifest - and refuses the whole
+      // load rather than just the track. That is a refusal of the video too, so
+      // the viewer gets a connected device and no picture.
+      //
+      // Dropping the track and loading again is the difference between subtitles
+      // and nothing at all. The page says so rather than quietly losing them.
+      console.warn('Cast refused the media with a subtitle track; retrying without', e);
+      delete info.tracks;
+      await load(false);
+      subtitlesDropped.set(true);
+    }
+  } else {
+    await load(false);
+  }
+
+  watchMedia(session);
   return session;
 }
 
-function toBcp47(code) {
+// The receiver has no queue here, so the sender is what advances the series: it
+// waits for the episode to finish and loads the next one. A real Cast queue would
+// need every episode's URL up front, and each of those is a pinned session - ten
+// sessions opened the moment playback starts, all counting as viewers. Keeping
+// the sender in charge costs nothing but a browser tab that stays open.
+//
+// Two detectors, because one is not dependable. RemotePlayerController survives
+// the media session it is watching, which an update listener bound to a single
+// media object does not - that object is torn down at the very moment the episode
+// ends, which is the moment we care about. The media listener stays as the second
+// route in case the player state arrives without a media session to read the
+// reason from. reportEnded settles which of them got there first.
+let endedHandler = null;
+let lastEndedMediaId = null;
+
+function reportEnded(mediaSessionId) {
+  // The end can be reported by both routes, and a state can repeat. Advancing
+  // twice would skip an episode, so each media session ends the series once.
+  if (mediaSessionId != null && mediaSessionId === lastEndedMediaId) return;
+  lastEndedMediaId = mediaSessionId;
+  if (endedHandler) endedHandler();
+}
+
+function watchPlayer() {
+  const player = new cast.framework.RemotePlayer();
+  const controller = new cast.framework.RemotePlayerController(player);
+  controller.addEventListener(
+    cast.framework.RemotePlayerEventType.PLAYER_STATE_CHANGED,
+    () => {
+      if (player.playerState !== chrome.cast.media.PlayerState.IDLE) return;
+      const media = context?.getCurrentSession()?.getMediaSession();
+      // FINISHED is what separates an episode that ran out from one the viewer
+      // stopped, or a receiver that was disconnected. Only the first advances.
+      console.debug('Cast: receiver idle', media?.idleReason);
+      if (media?.idleReason !== chrome.cast.media.IdleReason.FINISHED) return;
+      reportEnded(media.mediaSessionId);
+    }
+  );
+}
+
+function watchMedia(session) {
+  const media = session.getMediaSession();
+  if (!media) return;
+  const id = media.mediaSessionId;
+  media.addUpdateListener(() => {
+    if (media.idleReason === chrome.cast.media.IdleReason.FINISHED) reportEnded(id);
+  });
+}
+
+// Registers what to do when an episode finishes on the receiver. One handler at a
+// time, replaced rather than stacked, so a re-registration cannot advance twice.
+export function onCastEnded(fn) {
+  endedHandler = fn;
+}
+
+export function toBcp47(code) {
   if (!code) return 'und';
   try {
     return Intl.getCanonicalLocales(code)[0] || 'und';
@@ -169,10 +254,18 @@ export function stopCast() {
 export function describeCastError(e) {
   const code = typeof e === 'string' ? e : (e?.code || e?.message);
   if (code === 'cancel' || code === chrome?.cast?.ErrorCode?.CANCEL) return null;
+
+  // Anything unexpected reaches the console in full. The message below is all the
+  // viewer sees, and "could not cast" on its own is impossible to act on - for a
+  // failure that only shows up on real hardware, the code is the whole diagnosis.
+  console.error('Cast failed', code, e);
+
   switch (code) {
     case 'timeout': return 'The cast device did not respond';
     case 'receiver_unavailable': return 'No cast device could be reached';
     case 'session_error': return 'The cast device refused the media';
-    default: return 'Could not cast to the device';
+    case 'load_failed': return 'The cast device could not load the stream';
+    case 'invalid_parameter': return 'The cast device rejected the request';
+    default: return `Could not cast to the device (${code || 'unknown error'})`;
   }
 }

@@ -856,6 +856,51 @@ func (h *PublicHandler) GetShareEpisodes(w http.ResponseWriter, r *http.Request)
 }
 
 // StartEpisodePlayback starts playback for a specific episode within a season share
+// continuationOf reads the ?continues=<sessionId> parameter, which autoplay sets
+// to the session whose episode just finished. It answers what depth the new
+// session carries and whether this is a continuation at all.
+//
+// This is not an authorisation check and must not be read as one: the session id
+// is already in the viewer's hands, since it addresses the stream they are
+// watching. What it does is bound what a continuation is worth, so that skipping
+// the play counter cannot be turned into an unlimited link:
+//
+//   - the session named must belong to this share, not another;
+//   - it must have been alive within the heartbeat timeout, because autoplay
+//     follows straight on. Someone returning an hour later starts a fresh play;
+//   - the chain may not outrun the episodes the share contains, so one play buys
+//     at most one pass through the series.
+//
+// Anything that fails returns (0, false), which costs a play rather than refusing
+// playback.
+func (h *PublicHandler) continuationOf(r *http.Request, share *models.Share, episodeCount int) (int, bool) {
+	raw := r.URL.Query().Get("continues")
+	if raw == "" {
+		return 0, false
+	}
+
+	previousID, err := uuid.Parse(raw)
+	if err != nil {
+		return 0, false
+	}
+
+	previous, err := h.db.GetSessionByID(r.Context(), previousID)
+	if err != nil || previous == nil || previous.ShareID != share.ID {
+		return 0, false
+	}
+
+	if time.Since(previous.LastHeartbeatAt) > h.cfg.SessionHeartbeatTimeout {
+		return 0, false
+	}
+
+	depth := previous.ContinuationDepth + 1
+	if depth >= episodeCount {
+		return 0, false
+	}
+
+	return depth, true
+}
+
 func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 	episodeID := chi.URLParam(r, "episodeId")
@@ -912,15 +957,24 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		share, _ = h.db.GetShareByToken(r.Context(), token)
 	}
 
+	// Autoplay hands back the session it is following on from. Such a request
+	// continues a viewing that was already charged, so it skips the play limit.
+	depth, continuing := h.continuationOf(r, share, len(episodes))
+
 	// Check limits
-	if !share.CanStartNewPlay() {
+	allowed := share.CanStartNewPlay()
+	if continuing {
+		allowed = share.CanContinuePlay()
+	}
+	if !allowed {
 		ipHash := middleware.GetIPHash(r.Context())
 		h.db.LogAuditEvent(r.Context(), database.AuditEventPlaybackDenied, &share.ID, nil, nil, &ipHash, map[string]interface{}{
 			"reason":    "limit_reached",
 			"episodeId": episodeID,
+			"continues": continuing,
 		})
 
-		if share.MaxTotalPlays.Valid && int64(share.TotalPlays) >= share.MaxTotalPlays.Int64 {
+		if !continuing && share.MaxTotalPlays.Valid && int64(share.TotalPlays) >= share.MaxTotalPlays.Int64 {
 			writeError(w, http.StatusForbidden, "maximum plays reached")
 		} else {
 			writeError(w, http.StatusForbidden, "maximum concurrent viewers reached")
@@ -939,6 +993,8 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		StartedAt:       time.Now(),
 		LastHeartbeatAt: time.Now(),
 		JellyfinItemID:  sql.NullString{String: episodeID, Valid: true},
+
+		ContinuationDepth: depth,
 	}
 
 	ipHash := middleware.GetIPHash(r.Context())
@@ -966,14 +1022,18 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Increment counters
-	if err := h.db.IncrementPlayCount(r.Context(), share.ID); err != nil {
-		log.Printf("Failed to increment play count: %v", err)
+	// Increment counters. A continuation is deliberately not counted; see
+	// continuationOf for what stops that from being a way round the limit.
+	if !continuing {
+		if err := h.db.IncrementPlayCount(r.Context(), share.ID); err != nil {
+			log.Printf("Failed to increment play count: %v", err)
+		}
 	}
 
 	// Log audit event
 	h.db.LogAuditEvent(r.Context(), database.AuditEventPlaybackStarted, &share.ID, &session.ID, nil, &ipHash, map[string]interface{}{
 		"episodeId": episodeID,
+		"continues": continuing,
 	})
 
 	// Generate playback URL for the specific episode

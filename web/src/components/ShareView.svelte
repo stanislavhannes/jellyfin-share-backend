@@ -1,8 +1,9 @@
 <script>
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import Player from './Player.svelte';
-  import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError,
-           castApiReady, castAvailable, castConnected, castDeviceName } from '../cast.js';
+  import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError, onCastEnded,
+           toBcp47, subtitlesDropped, castApiReady, castAvailable, castConnected,
+           castDeviceName } from '../cast.js';
 
   export let shareInfo;
   export let token;
@@ -23,6 +24,11 @@
   let imageLoaded = !shareInfo.posterUrl;
   let showFullCast = false;
   let currentPlayingTitle = '';
+  // Which episode the browser player is on, so autoplay knows where it is.
+  let currentEpisodeId = null;
+
+  // The track the viewer picked, so the player can name it and switch it on.
+  $: chosenSubtitle = (shareInfo.subtitleTracks || []).find((t) => t.index === selectedSubtitleIndex);
 
   // Episode list for Season/Series
   let episodes = [];
@@ -31,6 +37,7 @@
 
   onMount(async () => {
     initCast();
+    onCastEnded(advanceCast);
     const timeout = setTimeout(() => {
       imageLoaded = true;
     }, 500);
@@ -161,8 +168,12 @@
   }
 
   // The server validates and pins these; sending them is a request, not a command.
-  function trackQuery() {
-    const p = ['videoCodecs=' + supportedVideoCodecs().join(',')];
+  // videoCodecs is overridden when casting: the receiver decides what it can
+  // decode, not this browser. Everything else - notably the language hints, which
+  // matter for an episode whose track list was probed on a different one - has to
+  // travel on both paths alike.
+  function trackQuery(videoCodecs) {
+    const p = ['videoCodecs=' + (videoCodecs || supportedVideoCodecs().join(','))];
     if (selectedAudioIndex != null) {
       p.push('audioStreamIndex=' + selectedAudioIndex);
       // Send the language too: for a season or series the list was probed on one
@@ -181,14 +192,23 @@
   let casting = false;
   let castHeartbeat = null;
   let castSessionId = null;
+  // Which episode is on the receiver, so the list can mark it.
+  let castingEpisodeId = null;
 
   // Releases the session server-side rather than leaving it to the stale-session
   // reaper, which would hold a concurrent-viewer slot for the timeout's duration.
   async function endCastSession() {
+    stopCast();
+    castingEpisodeId = null;
+    await finishCastSession();
+  }
+
+  // Releases the session but leaves the device connected, so the next episode can
+  // start without opening the picker again.
+  async function finishCastSession() {
     stopCastHeartbeat();
     const id = castSessionId;
     castSessionId = null;
-    stopCast();
     if (!id) return;
     try {
       await fetch(`/api/public/sessions/${id}/finish`, {
@@ -237,11 +257,10 @@
   // alive and occupying a concurrent-viewer slot.
   $: if (!$castConnected) stopCastHeartbeat();
 
-  // The receiver decides what it can decode, not this browser, so the codec
-  // negotiation is bypassed and h264 is requested outright. Every Cast device
-  // handles it, where HEVC depends on the model. Going through /play once keeps
-  // this to a single play against the share's limit.
-  async function startCast() {
+  // h264 is requested outright rather than negotiated: every Cast device decodes
+  // it, where HEVC depends on the model. Going through /play once keeps this to a
+  // single play against the share's limit.
+  async function castItem({ playPath, title, subtitle, durationSeconds, episodeId = null }) {
     playError = '';
     casting = true;
     try {
@@ -249,10 +268,12 @@
       // must not run if the viewer dismisses the picker.
       await ensureCastSession();
 
-      const p = ['videoCodecs=h264'];
-      if (selectedAudioIndex != null) p.push('audioStreamIndex=' + selectedAudioIndex);
-      if (selectedSubtitleIndex != null) p.push('subtitleStreamIndex=' + selectedSubtitleIndex);
-      const response = await fetch(`/api/public/shares/${token}/play?${p.join('&')}`, {
+      // A receiver plays one thing at a time. Switching episodes without releasing
+      // the previous session would leave it holding a concurrent-viewer slot until
+      // the stale-session reaper gets to it.
+      await finishCastSession();
+
+      const response = await fetch(playPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include'
@@ -268,12 +289,13 @@
         url: data.playbackUrl,
         subtitleUrl: data.subtitleUrl,
         subtitleLanguage: chosen?.language,
-        title: shareInfo.title,
-        subtitle: shareInfo.year ? String(shareInfo.year) : '',
+        title,
+        subtitle,
         posterUrl: shareInfo.posterUrl,
-        durationSeconds: shareInfo.runtimeSeconds
+        durationSeconds
       });
       castSessionId = data.sessionId;
+      castingEpisodeId = episodeId;
       startCastHeartbeat(data.sessionId);
     } catch (e) {
       // A dismissed picker is not a failure.
@@ -281,6 +303,124 @@
     } finally {
       casting = false;
     }
+  }
+
+  function startCast() {
+    return castItem({
+      playPath: `/api/public/shares/${token}/play${trackQuery('h264')}`,
+      title: shareInfo.title,
+      subtitle: shareInfo.year ? String(shareInfo.year) : '',
+      durationSeconds: shareInfo.runtimeSeconds
+    });
+  }
+
+  function castEpisode(episode, { continues } = {}) {
+    return castItem({
+      playPath: episodePlayPath(episode.id, { codec: 'h264', continues }),
+      title: episode.name,
+      subtitle: `${episodeLabel(episode)} \u00b7 ${shareInfo.title}`,
+      durationSeconds: episode.runtimeSeconds,
+      episodeId: episode.id
+    });
+  }
+
+  // A season or series has no single Play button to sit beside, so connecting is
+  // its own step. It costs nothing: /play only runs once an episode is picked.
+  async function connectCast() {
+    playError = '';
+    casting = true;
+    try {
+      await ensureCastSession();
+    } catch (e) {
+      playError = describeCastError(e) || '';
+    } finally {
+      casting = false;
+    }
+  }
+
+  function episodeLabel(episode) {
+    return episode.seasonNumber
+      ? `S${episode.seasonNumber}E${episode.indexNumber || '?'}`
+      : `Episode ${episode.indexNumber || '?'}`;
+  }
+
+  // The list is already in running order, so "next" is simply the row below.
+  function nextEpisode(afterId) {
+    const i = episodes.findIndex((e) => e.id === afterId);
+    return i >= 0 && i + 1 < episodes.length ? episodes[i + 1] : null;
+  }
+
+  function episodePlayPath(episodeId, { codec, continues } = {}) {
+    let query = trackQuery(codec);
+    // Tells the backend this carries on a viewing it already charged for, so a
+    // series link offered as "three plays" means three viewings rather than
+    // three episodes. The backend decides whether to honour it.
+    if (continues) query += '&continues=' + continues;
+    return `/api/public/shares/${token}/episodes/${episodeId}/play${query}`;
+  }
+
+  async function finishSession(sessionId) {
+    if (!sessionId) return;
+    try {
+      await fetch(`/api/public/sessions/${sessionId}/finish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+        credentials: 'include'
+      });
+    } catch (e) {
+      console.warn('Could not finish session', e);
+    }
+  }
+
+  // Autoplay in the browser - and with it AirPlay, which mirrors the same element,
+  // so an episode finishing on an Apple TV arrives here as well.
+  async function handlePlaybackEnded() {
+    // A single item has nothing to advance to; leave the player as it was.
+    if (!isSeasonOrSeries) return;
+
+    const next = nextEpisode(currentEpisodeId);
+    if (!next) {
+      handlePlayerClose();
+      return;
+    }
+
+    // Release the finished session before asking for the next one. A share
+    // limited to one concurrent viewer would otherwise refuse its own sequel.
+    const previous = playbackData?.sessionId;
+    await finishSession(previous);
+
+    try {
+      const response = await fetch(episodePlayPath(next.id, { continues: previous }), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        playError = data.error || 'Failed to start the next episode';
+        handlePlayerClose();
+        return;
+      }
+      playbackData = await response.json();
+      currentEpisodeId = next.id;
+      currentPlayingTitle = `E${next.indexNumber}: ${next.name}`;
+    } catch (e) {
+      playError = 'Failed to connect to server';
+      handlePlayerClose();
+    }
+  }
+
+  // Autoplay on the receiver. Reading castSessionId before castEpisode runs
+  // matters: it releases the old session and clears the field on the way.
+  async function advanceCast() {
+    const next = nextEpisode(castingEpisodeId);
+    console.debug('Cast: episode finished', castingEpisodeId, '-> next', next?.id || 'none');
+    if (!next) {
+      await endCastSession();
+      return;
+    }
+    await castEpisode(next, { continues: castSessionId });
   }
 
   async function startPlayback() {
@@ -298,6 +438,7 @@
       }
       playbackData = await response.json();
       currentPlayingTitle = shareInfo.title;
+      currentEpisodeId = null;
       isPlaying = true;
     } catch (e) {
       playError = 'Failed to connect to server';
@@ -319,6 +460,7 @@
       }
       playbackData = await response.json();
       currentPlayingTitle = `E${episode.indexNumber}: ${episode.name}`;
+      currentEpisodeId = episode.id;
       isPlaying = true;
     } catch (e) {
       playError = 'Failed to connect to server';
@@ -329,6 +471,7 @@
     isPlaying = false;
     playbackData = null;
     currentPlayingTitle = '';
+    currentEpisodeId = null;
   }
 
   function handleImageLoad() {
@@ -342,7 +485,14 @@
 
 <div class="share-container">
   {#if isPlaying && playbackData}
-    <Player {playbackData} title={currentPlayingTitle || shareInfo.title} on:close={handlePlayerClose} />
+    <!-- Keyed on the session: autoplay swaps in the next episode, and the player
+         has to be rebuilt around it rather than handed a new URL mid-flight. -->
+    {#key playbackData.sessionId}
+      <Player {playbackData} title={currentPlayingTitle || shareInfo.title}
+              subtitleLabel={chosenSubtitle ? trackLabel(chosenSubtitle, 'Subtitle') : 'Subtitles'}
+              subtitleLanguage={toBcp47(chosenSubtitle?.language)}
+              on:close={handlePlayerClose} on:ended={handlePlaybackEnded} />
+    {/key}
   {:else}
     <div class="backdrop-container">
       <div class="backdrop" style="background-image: url('{shareInfo.backdropUrl || shareInfo.posterUrl}')"></div>
@@ -595,6 +745,33 @@
                   {/if}
                 </h3>
 
+                {#if $castApiReady && episodes.length > 0}
+                  <div class="episodes-cast-row">
+                    {#if $castConnected}
+                      <span class="cast-status">
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zM21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
+                        </svg>
+                        <span>Connected to <strong>{$castDeviceName}</strong> — pick an episode to play it there</span>
+                      </span>
+                      <button class="cast-button" on:click={endCastSession} title="Stop casting">
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M6 6h12v12H6z"/>
+                        </svg>
+                        <span>Stop</span>
+                      </button>
+                    {:else}
+                      <button class="cast-button" on:click={connectCast} disabled={casting}
+                              title="Cast to a device">
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zM21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
+                        </svg>
+                        <span>{$castAvailable ? 'Cast to a TV' : 'Cast (searching…)'}</span>
+                      </button>
+                    {/if}
+                  </div>
+                {/if}
+
                 {#if episodesLoading}
                   <div class="episodes-loading">
                     <div class="loading-spinner"></div>
@@ -607,7 +784,10 @@
                 {:else}
                   <div class="episodes-list">
                     {#each episodes as episode}
-                      <button class="episode-card" on:click={() => startEpisodePlayback(episode)}>
+                      <button class="episode-card"
+                              class:episode-casting={$castConnected && castingEpisodeId === episode.id}
+                              disabled={casting}
+                              on:click={() => ($castConnected ? castEpisode(episode) : startEpisodePlayback(episode))}>
                         <div class="episode-number">
                           {#if episode.seasonNumber}
                             S{episode.seasonNumber}E{episode.indexNumber || '?'}
@@ -622,9 +802,15 @@
                           {/if}
                         </div>
                         <div class="episode-play">
-                          <svg viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M8 5v14l11-7z"/>
-                          </svg>
+                          {#if $castConnected}
+                            <svg class="cast-glyph" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                              <path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zM21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
+                            </svg>
+                          {:else}
+                            <svg viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M8 5v14l11-7z"/>
+                            </svg>
+                          {/if}
                         </div>
                       </button>
                     {/each}
@@ -633,6 +819,9 @@
 
                 {#if playError}
                   <p class="error-msg">{playError}</p>
+                {/if}
+                {#if $subtitlesDropped}
+                  <p class="cast-note">Casting without subtitles — the receiver would not take the track.</p>
                 {/if}
               </div>
             {:else}
@@ -667,6 +856,9 @@
               </div>
               {#if playError}
                 <p class="error-msg">{playError}</p>
+              {/if}
+              {#if $subtitlesDropped}
+                <p class="cast-note">Casting without subtitles — the receiver would not take the track.</p>
               {/if}
             {/if}
           {/if}
@@ -1346,6 +1538,45 @@
     transform: translateX(4px);
   }
 
+  .episode-card:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .episode-card.episode-casting {
+    border-color: rgba(0, 212, 255, 0.6);
+    background: rgba(0, 212, 255, 0.12);
+  }
+
+  .episodes-cast-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+  }
+
+  .cast-note {
+    font-size: 0.85rem;
+    opacity: 0.75;
+    margin-top: 0.5rem;
+  }
+
+  .cast-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    opacity: 0.85;
+  }
+
+  .cast-status svg {
+    width: 1.1rem;
+    height: 1.1rem;
+    color: #00d4ff;
+    flex-shrink: 0;
+  }
+
   .episode-card:active {
     transform: translateX(2px);
   }
@@ -1402,6 +1633,12 @@
     height: 14px;
     color: #00d4ff;
     margin-left: 2px;
+  }
+
+  .episode-play svg.cast-glyph {
+    width: 16px;
+    height: 16px;
+    margin-left: 0;
   }
 
   .episode-card:hover .episode-play {
