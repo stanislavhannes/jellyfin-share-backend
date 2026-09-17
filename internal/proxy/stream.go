@@ -100,9 +100,9 @@ func (p *StreamProxy) ServeStream(w http.ResponseWriter, r *http.Request) {
 func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session *models.ShareSession) string {
 	baseURL := p.jf.BaseURL()
 
-	// Never carry the credential in the URL - proxyRequest authorizes via header.
-	// Deleting rather than merely skipping also strips any api_key a viewer replays
-	// back to us from a manifest generated before this changed.
+	// Auth goes in the Authorization header (set in proxyRequest); strip any
+	// api_key echoed back from Jellyfin-generated manifests so it never
+	// reaches viewers.
 	params, _ := url.ParseQuery(query)
 	params.Del("api_key")
 	// Pin the source to the same item as the path. Jellyfin honours MediaSourceId over
@@ -208,7 +208,9 @@ func (p *StreamProxy) proxyRequest(w http.ResponseWriter, r *http.Request, targe
 		http.Error(w, "proxy error", http.StatusBadGateway)
 		return
 	}
-	p.jf.AuthorizeRequest(req)
+	req.Header.Set("Authorization", p.jf.AuthHeader())
+
+	req.Header.Set("Authorization", p.jf.AuthHeader())
 
 	// Copy relevant headers
 	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
@@ -312,7 +314,7 @@ func (p *StreamProxy) ServeSubtitle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error", http.StatusInternalServerError)
 		return
 	}
-	p.jf.AuthorizeRequest(req)
+	req.Header.Set("Authorization", p.jf.AuthHeader())
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -362,16 +364,19 @@ func (p *StreamProxy) ServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sizing params only; the credential travels as a header. Encoding them through
-	// url.Values also stops a caller from smuggling extra params via these values.
-	params := url.Values{}
-	for _, name := range []string{"maxWidth", "maxHeight", "quality"} {
-		if v := r.URL.Query().Get(name); v != "" {
-			params.Set(name, v)
-		}
+	// Add query params for sizing
+	sizing := url.Values{}
+	if maxWidth := r.URL.Query().Get("maxWidth"); maxWidth != "" {
+		sizing.Set("maxWidth", maxWidth)
 	}
-	if len(params) > 0 {
-		imageURL += "?" + params.Encode()
+	if maxHeight := r.URL.Query().Get("maxHeight"); maxHeight != "" {
+		sizing.Set("maxHeight", maxHeight)
+	}
+	if quality := r.URL.Query().Get("quality"); quality != "" {
+		sizing.Set("quality", quality)
+	}
+	if len(sizing) > 0 {
+		imageURL += "?" + sizing.Encode()
 	}
 
 	// Proxy with caching enabled
@@ -380,7 +385,7 @@ func (p *StreamProxy) ServeImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error", http.StatusInternalServerError)
 		return
 	}
-	p.jf.AuthorizeRequest(req)
+	req.Header.Set("Authorization", p.jf.AuthHeader())
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
