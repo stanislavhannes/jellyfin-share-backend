@@ -150,10 +150,17 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("X-Emby-Token", c.apiKey)
+	c.AuthorizeRequest(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	return c.httpClient.Do(req)
+}
+
+// AuthorizeRequest attaches the Jellyfin credential. Jellyfin 12 accepts only this
+// form: the X-Emby-Token header and the api_key query parameter both return 401.
+// Jellyfin 10.11 accepts it as well, so one form covers both.
+func (c *Client) AuthorizeRequest(req *http.Request) {
+	req.Header.Set("Authorization", fmt.Sprintf("MediaBrowser Token=%q", c.apiKey))
 }
 
 func (c *Client) GetItem(ctx context.Context, itemID string) (*ItemInfo, error) {
