@@ -24,6 +24,10 @@ with Jellyfin 12 support, two security fixes and a reworked streaming path — s
   switch them off
 - **Per-Share Quality** - Cap a single link at 1080p, 720p or 480p without touching
   the library or the server settings
+- **Designed Interface** - The share page leads with the artwork Jellyfin already
+  holds and states the link's terms (expiry, plays left) in plain language; the
+  admin surface is a single scannable index. Both follow one locked design system
+  ([`design.md`](design.md)) anchored on Jellyfin's own accent colour
 
 ## Architecture
 
@@ -261,6 +265,29 @@ docker-compose -f docker-compose.dev.yml up
 # Vite dev server runs on http://localhost:5173
 ```
 
+### Working on the interface
+
+[`design.md`](design.md) is the locked design system: palette, type, spacing,
+motion, component voice, and the reasoning behind each. Read it before changing
+the UI, and amend it rather than overriding it locally — a page that drifts from
+it is the thing the system exists to prevent.
+
+Two rules that are easy to break by accident:
+
+- **Every colour and font comes from `web/src/tokens.css`.** Components reference
+  tokens by name (`var(--color-accent)`); an inline hex or a bare `font-family`
+  is how a design system erodes. If a value does not exist yet, add it to
+  `tokens.css` first.
+- **Buttons filled with `--color-accent` keep their `outline-offset`.** The focus
+  ring only reaches 1.3:1 against the accent itself, so the offset is what puts it
+  on the page background where it reads at 9.1:1. Removing it makes the control
+  unusable by keyboard.
+
+The three faces (Instrument Serif, Geist, Geist Mono) load from Google Fonts. An
+instance with no outbound internet access falls back to the system stack — the
+layout holds, but the typography is not what was designed. Self-host the fonts if
+that matters to you.
+
 ### Project Structure
 
 ```
@@ -277,7 +304,9 @@ docker-compose -f docker-compose.dev.yml up
 ├── migrations/          # SQL migrations
 ├── web/
 │   └── src/
+│       ├── tokens.css   # The design system's only source of colour/type/spacing
 │       └── components/  # Svelte components
+├── design.md            # Locked design system — read before touching the UI
 └── docker-compose.yml   # Production compose
 ```
 
@@ -379,6 +408,21 @@ Jellyfin before being fixed; the numbers below are measured.
 - `JFSHARE_PORT` was ignored by the healthcheck, leaving the container
   permanently unhealthy.
 - Shares can be created without an expiry.
+
+**Interface**
+
+- The viewer page and the admin surface were redesigned around one system
+  ([`design.md`](design.md)). The palette is anchored on Jellyfin's own accent
+  `#00a4dc` so a share link reads as part of the server it came from; contrast
+  ratios are computed from the OKLCH values rather than eyeballed.
+- The share page leads with the artwork and states the link's terms in words —
+  how long it lasts, how many plays remain — instead of a row of badges.
+- The admin dashboard is an index rather than a table: it restacks on a phone
+  instead of scrolling sideways, and revoking asks in the row it affects rather
+  than through a browser `confirm()` that paints over the page.
+- Absolute timestamps render in the reader's own timezone, named — not as a bare
+  UTC string.
+- Every emitted page was rendered and measured at 320, 375, 414, 768 and 1280 px.
 
 **Compatibility**
 
