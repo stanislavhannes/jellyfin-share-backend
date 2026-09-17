@@ -348,6 +348,11 @@ Jellyfin before being fixed; the numbers below are measured.
     controls once playback has started and an AirPlay target is on the network.
   - **Firefox** has no casting route at all.
 
+  A season or series share has no single Play button, so casting is connected
+  once from above the episode list; every episode picked afterwards starts on the
+  receiver, and switching episodes releases the previous session rather than
+  leaving it to occupy a concurrent-viewer slot.
+
   Both need the page served over **HTTPS** — browsers dropped the Presentation API
   on plain HTTP — and `JFSHARE_PUBLIC_BASE_URL` must be an address the receiving
   device can reach, since it fetches the stream itself rather than relaying it
