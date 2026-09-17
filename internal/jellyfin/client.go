@@ -156,19 +156,12 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	c.AuthorizeRequest(req)
+	req.Header.Set("Authorization", c.AuthHeader())
 	req.Header.Set("Content-Type", "application/json")
 
 	return c.httpClient.Do(req)
 }
 
-// AuthorizeRequest attaches the Jellyfin credential as a header. Callers that build
-// their own request must use this instead of putting api_key in the query string:
-// Jellyfin echoes a request's query params back inside generated HLS manifests, and
-// the stream proxy forwards those manifests verbatim to untrusted share viewers.
-func (c *Client) AuthorizeRequest(req *http.Request) {
-	req.Header.Set("X-Emby-Token", c.apiKey)
-}
 
 func (c *Client) GetItem(ctx context.Context, itemID string) (*ItemInfo, error) {
 	if c.userID == "" {
@@ -252,6 +245,12 @@ func (c *Client) VerifyConnection(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// AuthHeader returns the standard MediaBrowser Authorization header value.
+// Jellyfin 10.11 removed legacy auth (X-Emby-Token header, api_key query param).
+func (c *Client) AuthHeader() string {
+	return `MediaBrowser Client="jellyfin-share", Device="jfshare-backend", DeviceId="jfshare-backend", Version="1.0", Token="` + c.apiKey + `"`
 }
 
 func (c *Client) BaseURL() string {
