@@ -7,6 +7,12 @@
 
   const dispatch = createEventDispatcher();
 
+  // Captured once, at creation. Autoplay replaces this component with one for the
+  // next episode, and the heartbeat and the finish call must stay aimed at the
+  // session this instance was given - reading the prop as it is torn down risks
+  // finishing the session that just took its place.
+  const sessionId = playbackData?.sessionId;
+
   let videoElement;
   let hls;
   let heartbeatInterval;
@@ -18,10 +24,20 @@
     startHeartbeat();
     document.addEventListener('fullscreenchange', handleFullscreenChange);
 
+    // Fires on the element itself, so this covers both paths: hls.js feeding it
+    // through MediaSource, and Safari playing the HLS natively - which is also
+    // what AirPlay mirrors, so an episode finishing on an Apple TV lands here too.
+    videoElement?.addEventListener('ended', handleEnded);
+
     return () => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      videoElement?.removeEventListener('ended', handleEnded);
     };
   });
+
+  function handleEnded() {
+    dispatch('ended');
+  }
 
   onDestroy(() => {
     cleanup();
@@ -98,10 +114,10 @@
 
   function startHeartbeat() {
     heartbeatInterval = setInterval(async () => {
-      if (!playbackData?.sessionId) return;
+      if (!sessionId) return;
 
       try {
-        const response = await fetch(`/api/public/sessions/${playbackData.sessionId}/heartbeat`, {
+        const response = await fetch(`/api/public/sessions/${sessionId}/heartbeat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -135,9 +151,9 @@
     }
 
     // Notify server that playback ended
-    if (playbackData?.sessionId) {
+    if (sessionId) {
       try {
-        await fetch(`/api/public/sessions/${playbackData.sessionId}/finish`, {
+        await fetch(`/api/public/sessions/${sessionId}/finish`, {
           method: 'POST',
           credentials: 'include'
         });

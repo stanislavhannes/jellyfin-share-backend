@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import Player from './Player.svelte';
-  import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError,
+  import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError, onCastEnded,
            castApiReady, castAvailable, castConnected, castDeviceName } from '../cast.js';
 
   export let shareInfo;
@@ -23,6 +23,8 @@
   let imageLoaded = !shareInfo.posterUrl;
   let showFullCast = false;
   let currentPlayingTitle = '';
+  // Which episode the browser player is on, so autoplay knows where it is.
+  let currentEpisodeId = null;
 
   // Episode list for Season/Series
   let episodes = [];
@@ -31,6 +33,7 @@
 
   onMount(async () => {
     initCast();
+    onCastEnded(advanceCast);
     const timeout = setTimeout(() => {
       imageLoaded = true;
     }, 500);
@@ -310,9 +313,9 @@
     });
   }
 
-  function castEpisode(episode) {
+  function castEpisode(episode, { continues } = {}) {
     return castItem({
-      playPath: `/api/public/shares/${token}/episodes/${episode.id}/play${trackQuery('h264')}`,
+      playPath: episodePlayPath(episode.id, { codec: 'h264', continues }),
       title: episode.name,
       subtitle: `${episodeLabel(episode)} \u00b7 ${shareInfo.title}`,
       durationSeconds: episode.runtimeSeconds,
@@ -340,6 +343,84 @@
       : `Episode ${episode.indexNumber || '?'}`;
   }
 
+  // The list is already in running order, so "next" is simply the row below.
+  function nextEpisode(afterId) {
+    const i = episodes.findIndex((e) => e.id === afterId);
+    return i >= 0 && i + 1 < episodes.length ? episodes[i + 1] : null;
+  }
+
+  function episodePlayPath(episodeId, { codec, continues } = {}) {
+    let query = trackQuery(codec);
+    // Tells the backend this carries on a viewing it already charged for, so a
+    // series link offered as "three plays" means three viewings rather than
+    // three episodes. The backend decides whether to honour it.
+    if (continues) query += '&continues=' + continues;
+    return `/api/public/shares/${token}/episodes/${episodeId}/play${query}`;
+  }
+
+  async function finishSession(sessionId) {
+    if (!sessionId) return;
+    try {
+      await fetch(`/api/public/sessions/${sessionId}/finish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+        credentials: 'include'
+      });
+    } catch (e) {
+      console.warn('Could not finish session', e);
+    }
+  }
+
+  // Autoplay in the browser - and with it AirPlay, which mirrors the same element,
+  // so an episode finishing on an Apple TV arrives here as well.
+  async function handlePlaybackEnded() {
+    // A single item has nothing to advance to; leave the player as it was.
+    if (!isSeasonOrSeries) return;
+
+    const next = nextEpisode(currentEpisodeId);
+    if (!next) {
+      handlePlayerClose();
+      return;
+    }
+
+    // Release the finished session before asking for the next one. A share
+    // limited to one concurrent viewer would otherwise refuse its own sequel.
+    const previous = playbackData?.sessionId;
+    await finishSession(previous);
+
+    try {
+      const response = await fetch(episodePlayPath(next.id, { continues: previous }), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        playError = data.error || 'Failed to start the next episode';
+        handlePlayerClose();
+        return;
+      }
+      playbackData = await response.json();
+      currentEpisodeId = next.id;
+      currentPlayingTitle = `E${next.indexNumber}: ${next.name}`;
+    } catch (e) {
+      playError = 'Failed to connect to server';
+      handlePlayerClose();
+    }
+  }
+
+  // Autoplay on the receiver. Reading castSessionId before castEpisode runs
+  // matters: it releases the old session and clears the field on the way.
+  async function advanceCast() {
+    const next = nextEpisode(castingEpisodeId);
+    if (!next) {
+      await endCastSession();
+      return;
+    }
+    await castEpisode(next, { continues: castSessionId });
+  }
+
   async function startPlayback() {
     playError = '';
     try {
@@ -355,6 +436,7 @@
       }
       playbackData = await response.json();
       currentPlayingTitle = shareInfo.title;
+      currentEpisodeId = null;
       isPlaying = true;
     } catch (e) {
       playError = 'Failed to connect to server';
@@ -376,6 +458,7 @@
       }
       playbackData = await response.json();
       currentPlayingTitle = `E${episode.indexNumber}: ${episode.name}`;
+      currentEpisodeId = episode.id;
       isPlaying = true;
     } catch (e) {
       playError = 'Failed to connect to server';
@@ -386,6 +469,7 @@
     isPlaying = false;
     playbackData = null;
     currentPlayingTitle = '';
+    currentEpisodeId = null;
   }
 
   function handleImageLoad() {
@@ -399,7 +483,12 @@
 
 <div class="share-container">
   {#if isPlaying && playbackData}
-    <Player {playbackData} title={currentPlayingTitle || shareInfo.title} on:close={handlePlayerClose} />
+    <!-- Keyed on the session: autoplay swaps in the next episode, and the player
+         has to be rebuilt around it rather than handed a new URL mid-flight. -->
+    {#key playbackData.sessionId}
+      <Player {playbackData} title={currentPlayingTitle || shareInfo.title}
+              on:close={handlePlayerClose} on:ended={handlePlaybackEnded} />
+    {/key}
   {:else}
     <div class="backdrop-container">
       <div class="backdrop" style="background-image: url('{shareInfo.backdropUrl || shareInfo.posterUrl}')"></div>

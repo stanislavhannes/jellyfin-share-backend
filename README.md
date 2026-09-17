@@ -353,6 +353,17 @@ Jellyfin before being fixed; the numbers below are measured.
   receiver, and switching episodes releases the previous session rather than
   leaving it to occupy a concurrent-viewer slot.
 
+- **Autoplay through a season.** When an episode ends the next one starts by
+  itself — in the browser, on a Cast receiver, and over AirPlay, which mirrors the
+  same element the browser path uses.
+
+  An episode started this way does not count against the share's play limit. A
+  link offered as "three plays" is meant to be three viewings, not three episodes,
+  and would otherwise die mid-season. The continuation is bounded so that
+  exemption cannot become an unlimited link: it must follow a session of the same
+  share that was alive moments ago, and a chain may not run longer than the share
+  has episodes — one play buys at most one pass through the series.
+
   Both need the page served over **HTTPS** — browsers dropped the Presentation API
   on plain HTTP — and `JFSHARE_PUBLIC_BASE_URL` must be an address the receiving
   device can reach, since it fetches the stream itself rather than relaying it

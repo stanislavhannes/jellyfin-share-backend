@@ -134,7 +134,36 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
   if (subtitleUrl) request.activeTrackIds = [1];
 
   await session.loadMedia(request);
+  watchForEnd(session);
   return session;
+}
+
+// The receiver has no queue here, so the sender is what advances the series: it
+// waits for the episode to finish and loads the next one. A real Cast queue would
+// need every episode's URL up front, and each of those is a pinned session - ten
+// sessions opened the moment playback starts, all counting as viewers. Keeping
+// the sender in charge costs nothing but a browser tab that stays open.
+function watchForEnd(session) {
+  const media = session.getMediaSession();
+  if (!media) return;
+
+  const listener = (isAlive) => {
+    // FINISHED distinguishes an episode that ran to its end from one the viewer
+    // stopped, or a receiver that was disconnected. Only the first should advance.
+    const finished = media.idleReason === chrome.cast.media.IdleReason.FINISHED;
+    if (isAlive && !finished) return;
+    media.removeUpdateListener(listener);
+    if (finished && endedHandler) endedHandler();
+  };
+  media.addUpdateListener(listener);
+}
+
+let endedHandler = null;
+
+// Registers what to do when an episode finishes on the receiver. One handler at a
+// time, replaced rather than stacked, so a re-registration cannot advance twice.
+export function onCastEnded(fn) {
+  endedHandler = fn;
 }
 
 function toBcp47(code) {
