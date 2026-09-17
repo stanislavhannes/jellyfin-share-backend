@@ -339,13 +339,21 @@ Jellyfin before being fixed; the numbers below are measured.
   the video needs no re-encode and the viewer can switch them off.
 - Audio and subtitle tracks are selectable, and a share can carry its own quality
   ceiling.
-- **Google Cast.** A Cast button appears on the share page when a receiver is on
-  the network. The receiver fetches the stream itself, so the page must be served
-  over HTTPS — browsers dropped the Presentation API on plain HTTP — and
-  `JFSHARE_PUBLIC_BASE_URL` must be an address the Cast device can reach. The
-  button is hidden on an insecure origin — except on `localhost`, which browsers
-  treat as secure, so it appears there and then hands the receiver a `localhost`
-  URL it cannot reach.
+- **Casting to a TV.**
+  - **Google Cast** works in **Chrome and other Chromium browsers only** (Edge,
+    Brave, Opera). Cast is a Chrome technology and Google publishes no interface
+    for other browsers, so the Cast button is absent in Safari and Firefox by
+    design, not by omission.
+  - **AirPlay** covers Safari instead, through Safari's own button in the player
+    controls once playback has started and an AirPlay target is on the network.
+  - **Firefox** has no casting route at all.
+
+  Both need the page served over **HTTPS** — browsers dropped the Presentation API
+  on plain HTTP — and `JFSHARE_PUBLIC_BASE_URL` must be an address the receiving
+  device can reach, since it fetches the stream itself rather than relaying it
+  through the browser. The Cast button is hidden on an insecure origin, with one
+  exception: browsers treat `localhost` as secure, so it appears there and then
+  hands the receiver a `localhost` URL it cannot resolve.
 
 **Fixes**
 

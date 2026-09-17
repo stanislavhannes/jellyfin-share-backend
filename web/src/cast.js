@@ -121,9 +121,11 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
     track.trackContentId = abs(subtitleUrl);
     track.trackContentType = 'text/vtt';
     track.subtype = chrome.cast.media.TextTrackType.SUBTITLES;
-    // Required for the SUBTITLES subtype; the receiver rejects the track without it.
-    track.language = subtitleLanguage || 'und';
-    track.name = 'Subtitles';
+    // Required for the SUBTITLES subtype; the receiver rejects the track without
+    // it, and it wants a BCP-47 tag. Jellyfin reports ISO 639-2 ("deu"), which
+    // the browser canonicalises for us ("de") - no mapping table needed.
+    track.language = toBcp47(subtitleLanguage);
+    track.name = languageName(track.language) || 'Subtitles';
     info.tracks = [track];
   }
 
@@ -133,6 +135,26 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
 
   await session.loadMedia(request);
   return session;
+}
+
+function toBcp47(code) {
+  if (!code) return 'und';
+  try {
+    return Intl.getCanonicalLocales(code)[0] || 'und';
+  } catch (e) {
+    return 'und';
+  }
+}
+
+// Gives the receiver something readable in its track menu - "German" rather than
+// a bare "Subtitles" - falling back when the language is unknown.
+function languageName(tag) {
+  if (!tag || tag === 'und') return null;
+  try {
+    return new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' }).of(tag);
+  } catch (e) {
+    return null;
+  }
 }
 
 export function stopCast() {
