@@ -699,12 +699,20 @@
                         {#if episode.seasonNumber}S{episode.seasonNumber}E{episode.indexNumber || '?'}{:else}{episode.indexNumber || '?'}{/if}
                       </span>
                       <span class="ep__name">{episode.name}</span>
-                      <span class="ep__end">
+                      <span class="ep__end" class:ep__end--cast={$castConnected}>
                         {#if episode.runtimeSeconds}
                           <span class="ep__len">{formatDuration(episode.runtimeSeconds)}</span>
                         {/if}
                         {#if $castConnected}
                           <CastIcon title="Plays on {$castDeviceName}" />
+                        {:else}
+                          <!-- Without a receiver the row plays here, and it has to say so:
+                               a title and a runtime alone do not read as a control. -->
+                          <svg class="ep__play" viewBox="0 0 24 24" fill="currentColor"
+                               stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"
+                               aria-hidden="true">
+                            <polygon points="6 3 20 12 6 21 6 3" />
+                          </svg>
                         {/if}
                       </span>
                     </button>
@@ -1250,12 +1258,23 @@
     color: var(--color-neutral);
   }
 
-  .ep__end :global(svg) { width: 1rem; height: 1rem; flex-shrink: 0; }
+  .ep__end :global(svg),
+  .ep__play { width: 1rem; height: 1rem; flex-shrink: 0; }
+
+  .ep__play {
+    color: var(--color-neutral);
+    transition: color var(--dur-micro) var(--ease-out);
+  }
+
+  @media (hover: hover) {
+    .ep:hover:not(:disabled) .ep__play { color: var(--color-accent); }
+  }
 
   /* While a receiver is connected the glyph is the row's promise, so it takes
-     the accent rather than sitting in the quiet grey. */
-  .ep--casting .ep__end,
-  .eplist .ep:not(:disabled) .ep__end :global(svg) { color: var(--color-accent); }
+     the accent rather than sitting in the quiet grey. The local play arrow does
+     not — it is the resting state, and every row having an accent mark would
+     make the accent mean nothing. */
+  .ep__end--cast :global(svg) { color: var(--color-accent); }
 
   .ep__len {
     font-family: var(--font-outlier);

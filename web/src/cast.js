@@ -26,6 +26,28 @@ const SDK_SRC = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCast
 let context = null;
 let initialised = false;
 
+// Receivers advertise their friendly name HTML-escaped, so a TV called
+// Fernseher im Raum "Wohnzimmer" arrives as ...&quot;Wohnzimmer&quot;. Svelte
+// renders the name as text, so the entities would be shown literally. Decode the
+// handful that appear in device names rather than round-tripping through the DOM.
+const ENTITIES = {
+  quot: '"', apos: "'", amp: '&', lt: '<', gt: '>', nbsp: '\u00a0', '#39': "'"
+};
+
+function decodeEntities(name) {
+  return String(name).replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (whole, body) => {
+    const key = body.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(ENTITIES, key)) return ENTITIES[key];
+    if (key[0] === '#') {
+      const code = key[1] === 'x' ? parseInt(key.slice(2), 16) : parseInt(key.slice(1), 10);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : whole;
+    }
+    return whole;
+  });
+}
+
 export function isCastPossible() {
   return typeof window !== 'undefined' && window.isSecureContext;
 }
@@ -55,7 +77,7 @@ export function initCast() {
         // this listener runs outside the try above, so a throw here would be
         // swallowed by the SDK and leave the stores stale.
         const session = context.getCurrentSession();
-        castDeviceName.set(session?.getCastDevice()?.friendlyName || '');
+        castDeviceName.set(decodeEntities(session?.getCastDevice()?.friendlyName || ''));
       };
 
       watchPlayer();
