@@ -25,14 +25,12 @@
   // was playing perfectly well.
   let error = null;
   let recovering = null;
-  let isFullscreen = false;
   let recoveryAttempts = 0;
   let lastRecoveryAt = 0;
 
   onMount(() => {
     initPlayer();
     startHeartbeat();
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
 
     // Fires on the element itself, so this covers both paths: hls.js feeding it
     // through MediaSource, and Safari playing the HLS natively - which is also
@@ -44,7 +42,6 @@
     videoElement?.addEventListener('timeupdate', clearRecovering);
 
     return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
       videoElement?.removeEventListener('ended', handleEnded);
       videoElement?.removeEventListener('loadedmetadata', showSubtitles);
       videoElement?.removeEventListener('playing', clearRecovering);
@@ -236,14 +233,10 @@
     }
   }
 
-  function handleFullscreenChange() {
-    isFullscreen = !!document.fullscreenElement;
-  }
-
   function handleKeydown(event) {
     switch (event.key) {
       case 'Escape':
-        if (!isFullscreen) {
+        if (!document.fullscreenElement) {
           handleClose();
         }
         break;
@@ -271,21 +264,11 @@
 <svelte:window on:keydown={handleKeydown} />
 
 <div class="player">
-  <!-- The video is the page. Chrome floats over it and gets out of the way. -->
+  <!-- The video is the page. Chrome floats over it and gets out of the way.
+       Fullscreen is the video's own control; a second one here only repeated it. -->
   <header class="player__bar">
     <h2 class="player__title">{title}</h2>
     <div class="player__tools">
-      <button class="glyph" on:click={toggleFullscreen} title="Fullscreen (F)" aria-label="Toggle fullscreen">
-        {#if isFullscreen}
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M8 3v3a2 2 0 01-2 2H3M21 8h-3a2 2 0 01-2-2V3M16 21v-3a2 2 0 012-2h3M3 16h3a2 2 0 012 2v3"/>
-          </svg>
-        {:else}
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3"/>
-          </svg>
-        {/if}
-      </button>
       <button class="glyph" on:click={handleClose} title="Back (Esc)" aria-label="Back to the share">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
           <path d="M18 6L6 18M6 6l12 12"/>
