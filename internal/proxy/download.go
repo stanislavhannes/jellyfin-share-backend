@@ -52,7 +52,7 @@ func (p *StreamProxy) serveFile(w http.ResponseWriter, r *http.Request, itemID s
 		return
 	}
 
-	resp, err := p.openOriginal(r.Context(), item, r.Header.Get("Range"))
+	resp, err := p.openOriginal(r.Context(), item, r.Header)
 	if err != nil {
 		log.Printf("Failed to open %s for download: %v", itemID, err)
 		http.Error(w, "file not available", http.StatusBadGateway)
@@ -60,7 +60,10 @@ func (p *StreamProxy) serveFile(w http.ResponseWriter, r *http.Request, itemID s
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+	// 416 is the browser's own business: it asked to resume past the end, and
+	// needs the Content-Range that says how long the file really is.
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent &&
+		resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
 		log.Printf("Jellyfin refused download of %s: %d", itemID, resp.StatusCode)
 		http.Error(w, "file not available", http.StatusBadGateway)
 		return
@@ -105,6 +108,13 @@ func (p *StreamProxy) serveEpisodesZip(w http.ResponseWriter, r *http.Request, s
 		if ctx.Err() != nil {
 			return // the viewer cancelled; nothing is listening any more
 		}
+		// A library that shows missing episodes lists them with no file behind
+		// them. There is nothing to put in the archive; aborting over it would
+		// cost the viewer the whole download.
+		if len(ep.MediaSources) == 0 {
+			log.Printf("ZIP download of %s: skipping %s, which has no file", itemID, ep.ID)
+			continue
+		}
 		if err := p.addEpisode(ctx, zw, folder, bySeason, ep); err != nil {
 			// The status line has gone out, so there is no error to send. Stopping
 			// without the central directory leaves a ZIP the viewer's tools reject,
@@ -119,7 +129,7 @@ func (p *StreamProxy) serveEpisodesZip(w http.ResponseWriter, r *http.Request, s
 }
 
 func (p *StreamProxy) addEpisode(ctx context.Context, zw *zip.Writer, folder string, bySeason bool, item *jellyfin.ItemInfo) error {
-	resp, err := p.openOriginal(ctx, item, "")
+	resp, err := p.openOriginal(ctx, item, nil)
 	if err != nil {
 		return err
 	}
@@ -147,7 +157,10 @@ func (p *StreamProxy) addEpisode(ctx context.Context, zw *zip.Writer, folder str
 	return err
 }
 
-func (p *StreamProxy) openOriginal(ctx context.Context, item *jellyfin.ItemInfo, rangeHeader string) (*http.Response, error) {
+// openOriginal requests the source file. From the viewer's request it forwards
+// only what resuming needs: Range, and If-Range so a file replaced since the
+// first part was saved is sent whole rather than spliced onto the old one.
+func (p *StreamProxy) openOriginal(ctx context.Context, item *jellyfin.ItemInfo, viewer http.Header) (*http.Response, error) {
 	if len(item.MediaSources) == 0 {
 		return nil, fmt.Errorf("item %s has no media source", item.ID)
 	}
@@ -157,8 +170,10 @@ func (p *StreamProxy) openOriginal(ctx context.Context, item *jellyfin.ItemInfo,
 		return nil, err
 	}
 	req.Header.Set("Authorization", p.jf.AuthHeader())
-	if rangeHeader != "" {
-		req.Header.Set("Range", rangeHeader)
+	for _, h := range []string{"Range", "If-Range"} {
+		if v := viewer.Get(h); v != "" {
+			req.Header.Set(h, v)
+		}
 	}
 	return p.httpClient.Do(req)
 }
