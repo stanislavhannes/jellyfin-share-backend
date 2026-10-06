@@ -31,8 +31,7 @@
   const NEXT_UP_SECONDS = 30;
 
   let videoElement;
-  let playerElement;
-  let hls;
+    let hls;
   let heartbeatInterval;
   // error ends playback and offers a way back. recovering is a passing condition
   // hls.js is already working through, and it clears itself once frames flow
@@ -109,7 +108,7 @@
 
   // ---- Next episode ----
   let remaining = Infinity;
-  $: showNextUp = !!nextUp && !error && remaining <= NEXT_UP_SECONDS && remaining > 0;
+  $: showNextUp = !!nextUp && !error && !finished && remaining <= NEXT_UP_SECONDS && remaining > 0;
   $: countdown = Math.ceil(remaining);
   // How far through the countdown we are, 0..1, for the fill behind the button.
   $: nextUpFill = Math.min(1, Math.max(0, 1 - remaining / NEXT_UP_SECONDS));
@@ -148,7 +147,6 @@
   }
 
   onDestroy(() => {
-    reportProgress();
     cleanup();
   });
 
@@ -278,6 +276,10 @@
   }
 
   async function cleanup() {
+    // First: hls.destroy() below detaches the media, after which the element no
+    // longer knows its duration and the position cannot be saved.
+    reportProgress();
+
     if (heartbeatInterval) {
       clearInterval(heartbeatInterval);
       heartbeatInterval = null;
@@ -306,37 +308,42 @@
     dispatch('close');
   }
 
-  // Fullscreen goes to the player, not the bare <video>: in a fullscreen video
-  // element nothing of the page can paint, and the next-episode card would be
-  // lost exactly where people watch. The video's own fullscreen control (and a
-  // double-click) put the element itself fullscreen, so that is caught here and
-  // handed up to the player. The click's activation is still live when this
-  // event arrives, which is what allows the new request.
-  let playerFullscreen = false;
+  // Fullscreen goes to the whole page, not the bare <video>: in a fullscreen
+  // video element nothing of the page can paint, and the next-episode card would
+  // be lost exactly where people watch. Nor to this player: it is rebuilt for
+  // every episode, and removing the fullscreen element leaves fullscreen - the
+  // viewer would drop out of it at each autoplay. The page survives the swap.
+  //
+  // The video's own fullscreen control (and a double-click) put the element
+  // itself fullscreen, so that is caught here and handed up. The click's
+  // activation is still live when this event arrives, which is what allows the
+  // new request; a browser that refuses it leaves fullscreen instead.
+  const page = () => document.documentElement;
+  let pageFullscreen = false;
 
   async function handleFullscreenChange() {
-    if (document.fullscreenElement === videoElement && playerElement?.requestFullscreen) {
-      // Already fullscreen through the player, the control means "leave".
-      const leaving = playerFullscreen;
+    if (document.fullscreenElement === videoElement && page().requestFullscreen) {
+      // Already fullscreen through the page, the control means "leave".
+      const leaving = pageFullscreen;
       try {
         await document.exitFullscreen();
         if (leaving) {
           if (document.fullscreenElement) await document.exitFullscreen();
         } else {
-          await playerElement.requestFullscreen();
+          await page().requestFullscreen();
         }
       } catch (e) {
-        // Refused (no activation left): the video stays fullscreen on its own.
+        // Refused: nothing left to do but stay out of fullscreen.
       }
     }
-    playerFullscreen = document.fullscreenElement === playerElement;
+    pageFullscreen = document.fullscreenElement === page();
   }
 
   function toggleFullscreen() {
     if (document.fullscreenElement) {
       document.exitFullscreen();
     } else {
-      playerElement?.requestFullscreen?.();
+      page().requestFullscreen?.();
     }
   }
 
@@ -348,6 +355,8 @@
         }
         break;
       case ' ':
+        // A focused button - Play now, Cancel - is activated by Space itself.
+        if (event.target instanceof HTMLElement && event.target.closest('button')) return;
         event.preventDefault();
         if (videoElement.paused) {
           videoElement.play();
@@ -370,7 +379,7 @@
 
 <svelte:window on:keydown={handleKeydown} />
 
-<div class="player" bind:this={playerElement}>
+<div class="player">
   <!-- The video is the page. Chrome floats over it and gets out of the way.
        Fullscreen is the video's own control; a second one here only repeated it. -->
   <header class="player__bar">
@@ -478,7 +487,7 @@
   .player__bar > * { pointer-events: auto; }
 
   /* Fullscreen is for watching: the title bar steps aside, Esc leaves. */
-  .player:fullscreen .player__bar { display: none; }
+  :global(:root:fullscreen) .player__bar { display: none; }
 
   .player__title {
     font-size: var(--text-md);

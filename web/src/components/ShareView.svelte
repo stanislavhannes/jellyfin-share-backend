@@ -427,7 +427,15 @@
         return;
       }
       startPosition = 0;
-      playbackData = await response.json();
+      const data = await response.json();
+      // The viewer may have left the player while this was loading. The new
+      // session would then have no player to heartbeat or finish it, and would
+      // hold a viewer slot until the stale-session reaper found it.
+      if (!isPlaying) {
+        await finishSession(data.sessionId);
+        return;
+      }
+      playbackData = data;
       currentEpisodeId = next.id;
       currentPlayingTitle = `E${next.indexNumber}: ${next.name}`;
     } catch (e) {
