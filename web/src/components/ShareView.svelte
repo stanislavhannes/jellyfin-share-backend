@@ -2,10 +2,13 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import Player from './Player.svelte';
   import CastIcon from './CastIcon.svelte';
+  import PlayIcon from './PlayIcon.svelte';
   import DownloadIcon from './DownloadIcon.svelte';
   import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError, onCastEnded,
            toBcp47, subtitlesDropped, castApiReady, castAvailable, castConnected,
            castDeviceName } from '../cast.js';
+  import { MAIN, loadProgress, saveProgress, resumePosition, seriesResumeTarget,
+           watchedFraction, formatClock } from '../progress.js';
 
   export let shareInfo;
   export let token;
@@ -28,6 +31,22 @@
   let currentPlayingTitle = '';
   // Which episode the browser player is on, so autoplay knows where it is.
   let currentEpisodeId = null;
+  // Where the player starts, when resuming.
+  let startPosition = 0;
+
+  // ---- Where the viewer left off (this browser only; see progress.js) ----
+  let progress = loadProgress(token);
+
+  function recordProgress(key, position, duration) {
+    progress = saveProgress(token, progress, key, position, duration);
+  }
+
+  $: movieResumeAt = resumePosition(progress.items[MAIN]);
+  $: seriesResume = seriesResumeTarget(progress, episodes);
+
+  // The episode after the one playing, for the card near its end.
+  $: upNext = isPlaying && currentEpisodeId ? nextEpisode(currentEpisodeId) : null;
+  $: nextUpCard = upNext ? { label: episodeLabel(upNext), name: upNext.name } : null;
 
   // The track the viewer picked, so the player can name it and switch it on.
   $: chosenSubtitle = (shareInfo.subtitleTracks || []).find((t) => t.index === selectedSubtitleIndex);
@@ -262,7 +281,7 @@
   // h264 is requested outright rather than negotiated: every Cast device decodes
   // it, where HEVC depends on the model. Going through /play once keeps this to a
   // single play against the share's limit.
-  async function castItem({ playPath, title, subtitle, durationSeconds, episodeId = null }) {
+  async function castItem({ playPath, title, subtitle, durationSeconds, episodeId = null, startTime = 0 }) {
     playError = '';
     casting = true;
     try {
@@ -294,7 +313,8 @@
         title,
         subtitle,
         posterUrl: shareInfo.posterUrl,
-        durationSeconds
+        durationSeconds,
+        startTime
       });
       castSessionId = data.sessionId;
       castingEpisodeId = episodeId;
@@ -312,17 +332,19 @@
       playPath: `/api/public/shares/${token}/play${trackQuery('h264')}`,
       title: shareInfo.title,
       subtitle: shareInfo.year ? String(shareInfo.year) : '',
-      durationSeconds: shareInfo.runtimeSeconds
+      durationSeconds: shareInfo.runtimeSeconds,
+      startTime: movieResumeAt
     });
   }
 
-  function castEpisode(episode, { continues } = {}) {
+  function castEpisode(episode, { continues, startTime = 0 } = {}) {
     return castItem({
       playPath: episodePlayPath(episode.id, { codec: 'h264', continues }),
       title: episode.name,
       subtitle: `${episodeLabel(episode)} \u00b7 ${shareInfo.title}`,
       durationSeconds: episode.runtimeSeconds,
-      episodeId: episode.id
+      episodeId: episode.id,
+      startTime
     });
   }
 
@@ -404,6 +426,7 @@
         handlePlayerClose();
         return;
       }
+      startPosition = 0;
       playbackData = await response.json();
       currentEpisodeId = next.id;
       currentPlayingTitle = `E${next.indexNumber}: ${next.name}`;
@@ -425,7 +448,7 @@
     await castEpisode(next, { continues: castSessionId });
   }
 
-  async function startPlayback() {
+  async function startPlayback(startAt = 0) {
     playError = '';
     try {
       const response = await fetch(`/api/public/shares/${token}/play${trackQuery()}`, {
@@ -438,6 +461,7 @@
         playError = data.error || 'Failed to start playback';
         return;
       }
+      startPosition = startAt;
       playbackData = await response.json();
       currentPlayingTitle = shareInfo.title;
       currentEpisodeId = null;
@@ -447,7 +471,7 @@
     }
   }
 
-  async function startEpisodePlayback(episode) {
+  async function startEpisodePlayback(episode, startAt = 0) {
     playError = '';
     try {
       const response = await fetch(`/api/public/shares/${token}/episodes/${episode.id}/play${trackQuery()}`, {
@@ -460,6 +484,7 @@
         playError = data.error || 'Failed to start playback';
         return;
       }
+      startPosition = startAt;
       playbackData = await response.json();
       currentPlayingTitle = `E${episode.indexNumber}: ${episode.name}`;
       currentEpisodeId = episode.id;
@@ -474,6 +499,21 @@
     playbackData = null;
     currentPlayingTitle = '';
     currentEpisodeId = null;
+    startPosition = 0;
+  }
+
+  // An episode row, or the series' main button: on the receiver when one is
+  // connected, here otherwise.
+  function playEpisode(episode, startAt = 0) {
+    return $castConnected
+      ? castEpisode(episode, { startTime: startAt })
+      : startEpisodePlayback(episode, startAt);
+  }
+
+  // The series' main button: resume where the viewer was, or start at the top.
+  function playSeries() {
+    if (seriesResume) return playEpisode(seriesResume.episode, seriesResume.position);
+    if (episodes.length) return playEpisode(episodes[0]);
   }
 
   // ---- Downloads ----
@@ -513,7 +553,7 @@
     }
   }
 
-  const downloadMovie = () => startDownload(`/api/public/shares/${token}/download`, 'main');
+  const downloadMovie = () => startDownload(`/api/public/shares/${token}/download`, MAIN);
   const downloadEpisode = (episode) =>
     startDownload(`/api/public/shares/${token}/episodes/${episode.id}/download`, episode.id);
   const downloadAll = () => startDownload(`/api/public/shares/${token}/episodes/download`, 'all');
@@ -581,7 +621,12 @@
       <Player {playbackData} title={currentPlayingTitle || shareInfo.title}
               subtitleLabel={chosenSubtitle ? trackLabel(chosenSubtitle, 'Subtitle') : 'Subtitles'}
               subtitleLanguage={toBcp47(chosenSubtitle?.language)}
-              on:close={handlePlayerClose} on:ended={handlePlaybackEnded} />
+              {startPosition}
+              nextUp={nextUpCard}
+              progressKey={currentEpisodeId || MAIN}
+              onProgress={recordProgress}
+              on:close={handlePlayerClose} on:ended={handlePlaybackEnded}
+              on:next={handlePlaybackEnded} />
     {/key}
   {:else}
     <!-- ── The photographic fold. The artwork fills it; the type is annotation. ── -->
@@ -706,14 +751,27 @@
               {#if episodes.length > 0}<span class="episodes__n">{episodes.length}</span>{/if}
             </h2>
 
-            {#if episodes.length > 0 && shareInfo.allowDownload}
+            {#if episodes.length > 0}
               <div class="play">
-                <button class="btn-ghost" on:click={downloadAll} disabled={preparingDownload !== null}
-                        title={downloadHint}>
-                  <DownloadIcon />
-                  <span>{preparingDownload === 'all' ? 'Preparing' : 'Download all'}</span>
-                  <span class="btn__aside">ZIP</span>
+                <button class="btn-primary btn-primary--lg" on:click={playSeries} disabled={casting}>
+                  <PlayIcon />
+                  {#if seriesResume?.position > 0}
+                    <span>Resume {episodeLabel(seriesResume.episode)}</span>
+                    <span class="btn__aside">{formatClock(seriesResume.position)}</span>
+                  {:else if seriesResume}
+                    <span>{seriesResume.isNext ? 'Continue with' : 'Play'} {episodeLabel(seriesResume.episode)}</span>
+                  {:else}
+                    <span>Play {episodeLabel(episodes[0])}</span>
+                  {/if}
                 </button>
+                {#if shareInfo.allowDownload}
+                  <button class="btn-ghost" on:click={downloadAll} disabled={preparingDownload !== null}
+                          title={downloadHint}>
+                    <DownloadIcon />
+                    <span>{preparingDownload === 'all' ? 'Preparing' : 'Download all'}</span>
+                    <span class="btn__aside">ZIP</span>
+                  </button>
+                {/if}
               </div>
             {/if}
 
@@ -747,11 +805,12 @@
             {:else}
               <ul class="eplist">
                 {#each episodes as episode (episode.id)}
+                  {@const seen = watchedFraction(progress.items[episode.id])}
                   <li class="eprow">
                     <button class="ep"
                             class:ep--casting={$castConnected && castingEpisodeId === episode.id}
                             disabled={casting}
-                            on:click={() => ($castConnected ? castEpisode(episode) : startEpisodePlayback(episode))}>
+                            on:click={() => playEpisode(episode, resumePosition(progress.items[episode.id]))}>
                       <span class="ep__no">
                         {#if episode.seasonNumber}S{episode.seasonNumber}E{episode.indexNumber || '?'}{:else}{episode.indexNumber || '?'}{/if}
                       </span>
@@ -785,6 +844,11 @@
                         {/if}
                       </button>
                     {/if}
+                    {#if seen > 0}
+                      <!-- How much of the episode this browser has seen. -->
+                      <span class="ep__seen" class:ep__seen--done={seen >= 1}
+                            style="transform: scaleX({seen})" aria-hidden="true"></span>
+                    {/if}
                   </li>
                 {/each}
               </ul>
@@ -797,16 +861,27 @@
           </div>
         {:else}
           <div class="play">
-            <button class="btn-primary btn-primary--lg" on:click={startPlayback}>
-              <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-              <span>Play</span>
+            <button class="btn-primary btn-primary--lg" on:click={() => startPlayback(movieResumeAt)}>
+              <PlayIcon />
+              {#if movieResumeAt > 0}
+                <span>Resume</span>
+                <span class="btn__aside">{formatClock(movieResumeAt)}</span>
+              {:else}
+                <span>Play</span>
+              {/if}
             </button>
+            {#if movieResumeAt > 0}
+              <button class="btn-ghost" on:click={() => startPlayback()}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+                <span>From the start</span>
+              </button>
+            {/if}
 
             {#if shareInfo.allowDownload}
               <button class="btn-ghost" on:click={downloadMovie} disabled={preparingDownload !== null}
                       title={downloadHint}>
                 <DownloadIcon />
-                <span>{preparingDownload === 'main' ? 'Preparing' : 'Download'}</span>
+                <span>{preparingDownload === MAIN ? 'Preparing' : 'Download'}</span>
               </button>
             {/if}
 
@@ -1171,7 +1246,7 @@
     font-size: var(--text-md);
   }
 
-  .btn-primary svg { width: 1.15rem; height: 1.15rem; }
+  .btn-primary :global(svg) { width: 1.15rem; height: 1.15rem; }
 
   /* Icons never shrink the label or get squeezed by it. */
   .btn-ghost :global(svg),
@@ -1202,7 +1277,7 @@
     gap: var(--space-sm);
   }
 
-  /* A machine fact riding along in a button: the format of a download. */
+  /* A machine fact riding along in a button: the resume time, the format. */
   .btn__aside {
     font-family: var(--font-outlier);
     font-size: var(--text-sm);
@@ -1398,6 +1473,20 @@
 
   .ep__dl:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
   .ep__dl:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  /* What this browser has seen of an episode, laid along the row's rule. */
+  .ep__seen {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: var(--color-accent);
+    transform-origin: left center;
+    pointer-events: none;
+  }
+
+  .ep__seen--done { background: var(--color-accent-dim); }
 
   .meter--dot { width: 1rem; }
 
