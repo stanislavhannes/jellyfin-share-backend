@@ -16,24 +16,27 @@ import (
 	"github.com/google/uuid"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/config"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/database"
+	"github.com/jellyfin-share/jellyfin-share-backend/internal/download"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/jellyfin"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/middleware"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/models"
 )
 
 type PublicHandler struct {
-	db       *database.DB
-	jf       *jellyfin.Client
-	cfg      *config.Config
-	sessions *middleware.ShareSessionManager
+	db        *database.DB
+	jf        *jellyfin.Client
+	cfg       *config.Config
+	sessions  *middleware.ShareSessionManager
+	downloads *download.Signer
 }
 
-func NewPublicHandler(db *database.DB, jf *jellyfin.Client, cfg *config.Config, sessions *middleware.ShareSessionManager) *PublicHandler {
+func NewPublicHandler(db *database.DB, jf *jellyfin.Client, cfg *config.Config, sessions *middleware.ShareSessionManager, downloads *download.Signer) *PublicHandler {
 	return &PublicHandler{
-		db:       db,
-		jf:       jf,
-		cfg:      cfg,
-		sessions: sessions,
+		db:        db,
+		jf:        jf,
+		cfg:       cfg,
+		sessions:  sessions,
+		downloads: downloads,
 	}
 }
 
@@ -65,6 +68,7 @@ func (h *PublicHandler) GetShareInfo(w http.ResponseWriter, r *http.Request) {
 	h.db.LogAuditEvent(r.Context(), database.AuditEventShareAccessed, &share.ID, nil, nil, &ipHash, nil)
 
 	info := share.ToPublicInfo(h.cfg.PublicBaseURL)
+	info.AllowDownload = h.cfg.AllowDownloads
 
 	// Fetch extended metadata from Jellyfin
 	item, err := h.jf.GetItem(r.Context(), share.JellyfinItemID)
@@ -795,7 +799,7 @@ func (h *PublicHandler) FinishPlayback(w http.ResponseWriter, r *http.Request) {
 
 // episodesForShare returns the episodes a share actually grants access to: a
 // Season's own, or every episode of a Series flattened into one playable list.
-// Listing and playback both check against this.
+// Listing, playback and downloads all check against this.
 func (h *PublicHandler) episodesForShare(ctx context.Context, share *models.Share) ([]jellyfin.EpisodeInfo, error) {
 	return h.jf.GetEpisodesFor(ctx, share.ItemType, share.JellyfinItemID)
 }

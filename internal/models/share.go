@@ -180,6 +180,8 @@ type SharePublicInfo struct {
 	TotalPlays               int       `json:"totalPlays"`
 	MaxConcurrentViewers     *int64    `json:"maxConcurrentViewers,omitempty"`
 	CurrentConcurrentViewers int       `json:"currentConcurrentViewers"`
+	// AllowDownload tells the page whether to offer downloads at all.
+	AllowDownload            bool      `json:"allowDownload"`
 
 	// Extended metadata (fetched live from Jellyfin)
 	Year            int               `json:"year,omitempty"`
@@ -193,6 +195,13 @@ type SharePublicInfo struct {
 	VideoQuality    *VideoQualityInfo `json:"videoQuality,omitempty"`
 	AudioTracks     []AudioTrack      `json:"audioTracks,omitempty"`
 	SubtitleTracks  []SubtitleTrack   `json:"subtitleTracks,omitempty"`
+}
+
+// DownloadResponse carries the URL the browser fetches the file from. It is
+// relative for the same reason the subtitle URL is: the page may have been
+// reached on another hostname than PublicBaseURL.
+type DownloadResponse struct {
+	DownloadURL string `json:"downloadUrl"`
 }
 
 type ActorInfo struct {

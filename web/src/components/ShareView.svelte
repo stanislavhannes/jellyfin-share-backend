@@ -2,6 +2,7 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import Player from './Player.svelte';
   import CastIcon from './CastIcon.svelte';
+  import DownloadIcon from './DownloadIcon.svelte';
   import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError, onCastEnded,
            toBcp47, subtitlesDropped, castApiReady, castAvailable, castConnected,
            castDeviceName } from '../cast.js';
@@ -475,6 +476,51 @@
     currentEpisodeId = null;
   }
 
+  // ---- Downloads ----
+  // Which download is being prepared ('main', an episode id, or 'all'), so only
+  // that button shows it.
+  let preparingDownload = null;
+
+  // The POST is what checks the share and charges the play; the file itself
+  // then comes from a plain GET the browser handles as a download, so the page
+  // stays where it is.
+  async function startDownload(path, key) {
+    playError = '';
+    preparingDownload = key;
+    try {
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        playError = data.error || 'Failed to start the download';
+        return;
+      }
+      const { downloadUrl } = await response.json();
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      shareInfo = { ...shareInfo, totalPlays: shareInfo.totalPlays + 1 };
+    } catch (e) {
+      playError = 'Failed to connect to server';
+    } finally {
+      preparingDownload = null;
+    }
+  }
+
+  const downloadMovie = () => startDownload(`/api/public/shares/${token}/download`, 'main');
+  const downloadEpisode = (episode) =>
+    startDownload(`/api/public/shares/${token}/episodes/${episode.id}/download`, episode.id);
+  const downloadAll = () => startDownload(`/api/public/shares/${token}/episodes/download`, 'all');
+
+  // A limited link says up front what a download costs.
+  $: downloadHint = shareInfo.maxTotalPlays ? 'Counts as one play' : 'Download the original file';
+
   function handleImageLoad() {
     imageLoaded = true;
   }
@@ -660,6 +706,17 @@
               {#if episodes.length > 0}<span class="episodes__n">{episodes.length}</span>{/if}
             </h2>
 
+            {#if episodes.length > 0 && shareInfo.allowDownload}
+              <div class="play">
+                <button class="btn-ghost" on:click={downloadAll} disabled={preparingDownload !== null}
+                        title={downloadHint}>
+                  <DownloadIcon />
+                  <span>{preparingDownload === 'all' ? 'Preparing' : 'Download all'}</span>
+                  <span class="btn__aside">ZIP</span>
+                </button>
+              </div>
+            {/if}
+
             {#if $castApiReady && episodes.length > 0}
               <div class="castbar">
                 {#if $castConnected}
@@ -689,8 +746,8 @@
               <p class="msg">No episodes in this share.</p>
             {:else}
               <ul class="eplist">
-                {#each episodes as episode}
-                  <li>
+                {#each episodes as episode (episode.id)}
+                  <li class="eprow">
                     <button class="ep"
                             class:ep--casting={$castConnected && castingEpisodeId === episode.id}
                             disabled={casting}
@@ -716,6 +773,18 @@
                         {/if}
                       </span>
                     </button>
+                    {#if shareInfo.allowDownload}
+                      <button class="ep__dl" on:click={() => downloadEpisode(episode)}
+                              disabled={preparingDownload !== null}
+                              title={downloadHint}
+                              aria-label="Download {episodeLabel(episode)}: {episode.name}">
+                        {#if preparingDownload === episode.id}
+                          <span class="meter meter--dot" aria-hidden="true"></span>
+                        {:else}
+                          <DownloadIcon />
+                        {/if}
+                      </button>
+                    {/if}
                   </li>
                 {/each}
               </ul>
@@ -732,6 +801,14 @@
               <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
               <span>Play</span>
             </button>
+
+            {#if shareInfo.allowDownload}
+              <button class="btn-ghost" on:click={downloadMovie} disabled={preparingDownload !== null}
+                      title={downloadHint}>
+                <DownloadIcon />
+                <span>{preparingDownload === 'main' ? 'Preparing' : 'Download'}</span>
+              </button>
+            {/if}
 
             {#if $castApiReady}
               <button class="btn-ghost" on:click={startCast} disabled={casting}>
@@ -1125,6 +1202,17 @@
     gap: var(--space-sm);
   }
 
+  /* A machine fact riding along in a button: the format of a download. */
+  .btn__aside {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
+  }
+
+  .episodes .play { margin-bottom: var(--space-lg); }
+
   .link {
     margin-top: var(--space-xs);
     white-space: nowrap;
@@ -1209,8 +1297,20 @@
 
   .eplist { list-style: none; margin: 0; padding: 0; width: 100%; }
 
+  /* The row owns the rule, so the play target and the download control beside
+     it read as one line of the index. */
+  .eprow {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-xs);
+    border-bottom: var(--rule-hair) solid var(--color-rule-2);
+  }
+
   .ep {
     display: grid;
+    flex: 1 1 auto;
+    min-width: 0;
     grid-template-columns: 4.25rem minmax(0, 1fr) auto;
     gap: var(--space-md);
     align-items: baseline;
@@ -1219,7 +1319,6 @@
     text-align: start;
     background: none;
     border: none;
-    border-bottom: var(--rule-hair) solid var(--color-rule-2);
     cursor: pointer;
     transition: transform var(--dur-micro) var(--ease-out);
   }
@@ -1275,6 +1374,32 @@
      not — it is the resting state, and every row having an accent mark would
      make the accent mean nothing. */
   .ep__end--cast :global(svg) { color: var(--color-accent); }
+
+  .ep__dl {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: var(--control-h);
+    padding: 0;
+    background: none;
+    color: var(--color-neutral);
+    border: none;
+    border-radius: var(--radius-input);
+    cursor: pointer;
+    transition: color var(--dur-micro) var(--ease-out),
+                background-color var(--dur-micro) var(--ease-out);
+  }
+
+  .ep__dl :global(svg) { width: 1.05rem; height: 1.05rem; }
+
+  @media (hover: hover) {
+    .ep__dl:hover:not(:disabled) { color: var(--color-ink); background: var(--color-paper-2); }
+  }
+
+  .ep__dl:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+  .ep__dl:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  .meter--dot { width: 1rem; }
 
   .ep__len {
     font-family: var(--font-outlier);

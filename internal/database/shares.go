@@ -153,6 +153,21 @@ func (db *DB) UpdateShare(ctx context.Context, id uuid.UUID, maxTotalPlays, maxC
 	return nil
 }
 
+// IncrementTotalPlays charges a play without taking a concurrent-viewer slot,
+// for a download: there is no session that would later give the slot back.
+func (db *DB) IncrementTotalPlays(ctx context.Context, shareID uuid.UUID) error {
+	query := `
+		UPDATE shares
+		SET total_plays = total_plays + 1,
+		    last_activity_at = NOW()
+		WHERE id = $1`
+
+	if _, err := db.ExecContext(ctx, query, shareID); err != nil {
+		return fmt.Errorf("failed to increment total plays: %w", err)
+	}
+	return nil
+}
+
 func (db *DB) IncrementPlayCount(ctx context.Context, shareID uuid.UUID) error {
 	query := `
 		UPDATE shares

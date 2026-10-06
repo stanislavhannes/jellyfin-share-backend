@@ -106,6 +106,9 @@ type MediaSource struct {
 	ID                   string         `json:"Id"`
 	Name                 string         `json:"Name,omitempty"`
 	Container            string         `json:"Container,omitempty"`
+	// Path is the file on the Jellyfin host. Only its extension is ever used - it
+	// names a download - and the path itself never leaves the backend.
+	Path                 string         `json:"Path,omitempty"`
 	Size                 int64          `json:"Size,omitempty"`
 	Bitrate              int            `json:"Bitrate,omitempty"`
 	SupportsDirectPlay   bool           `json:"SupportsDirectPlay"`
@@ -217,6 +220,16 @@ func (c *Client) GetSubtitleURL(itemID, mediaSourceID string, index int) string 
 	return fmt.Sprintf("%s/Videos/%s/%s/Subtitles/%d/Stream.vtt", c.baseURL, itemID, mediaSourceID, index)
 }
 
+// GetOriginalFileURL returns the untouched source file of a media source. Static
+// means Jellyfin serves the file as it is on disk, with Range support, rather than
+// starting a transcode.
+func (c *Client) GetOriginalFileURL(itemID, mediaSourceID string) string {
+	if mediaSourceID == "" {
+		mediaSourceID = itemID
+	}
+	return fmt.Sprintf("%s/Videos/%s/stream?static=true&mediaSourceId=%s", c.baseURL, itemID, mediaSourceID)
+}
+
 func (c *Client) GetPosterURL(itemID string) string {
 	return fmt.Sprintf("%s/Items/%s/Images/Primary", c.baseURL, itemID)
 }
@@ -297,6 +310,13 @@ func (c *Client) GetEpisodesFor(ctx context.Context, itemType, itemID string) ([
 		})
 	}
 	return episodes, nil
+}
+
+// GetEpisodeFilesFor is GetEpisodesFor with each episode's media sources, so
+// the files can be fetched without a lookup per episode. It is the same query,
+// so a ZIP holds exactly the episodes the page lists.
+func (c *Client) GetEpisodeFilesFor(ctx context.Context, itemType, itemID string) ([]ItemInfo, error) {
+	return c.episodeItems(ctx, itemType, itemID, "MediaSources,Path")
 }
 
 // episodeItems is the one episode query: every episode below a Season or
