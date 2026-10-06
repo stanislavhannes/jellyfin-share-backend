@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+func TestDownloadsAllowed(t *testing.T) {
+	cases := []struct {
+		share, server, want bool
+	}{
+		{share: true, server: true, want: true},
+		{share: false, server: true, want: false}, // the sharer switched them off
+		{share: true, server: false, want: false}, // the server switched them off for every link
+		{share: false, server: false, want: false},
+	}
+	for _, c := range cases {
+		s := &Share{AllowDownload: c.share}
+		if got := s.DownloadsAllowed(c.server); got != c.want {
+			t.Errorf("share=%v server=%v: got %v, want %v", c.share, c.server, got, c.want)
+		}
+	}
+}
+
 func TestPlayLimitReached(t *testing.T) {
 	limit := func(n int64) sql.NullInt64 { return sql.NullInt64{Int64: n, Valid: true} }
 	cases := []struct {

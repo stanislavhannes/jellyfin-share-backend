@@ -61,14 +61,18 @@ func (h *PublicHandler) RequestAllEpisodesDownload(w http.ResponseWriter, r *htt
 	h.issueDownload(w, r, share, download.AllEpisodes)
 }
 
-// downloadableShare is publicShare for a download, which the backend may have
-// switched off altogether.
+// downloadableShare is publicShare for a download, which the sharer - or the
+// backend, for every link - may have switched off.
 func (h *PublicHandler) downloadableShare(w http.ResponseWriter, r *http.Request) (*models.Share, bool) {
-	if !h.cfg.AllowDownloads {
-		writeError(w, http.StatusForbidden, "downloads are disabled")
+	share, ok := h.publicShare(w, r)
+	if !ok {
 		return nil, false
 	}
-	return h.publicShare(w, r)
+	if !share.DownloadsAllowed(h.cfg.AllowDownloads) {
+		writeError(w, http.StatusForbidden, "downloads are not available for this link")
+		return nil, false
+	}
+	return share, true
 }
 
 // issueDownload charges the download against the play limit and hands back a

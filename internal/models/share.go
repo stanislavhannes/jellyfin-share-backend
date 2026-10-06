@@ -57,6 +57,9 @@ type Share struct {
 	// source decides, which is the default.
 	MaxVideoHeight           sql.NullInt64  `db:"max_video_height" json:"maxVideoHeight,omitempty"`
 	MaxVideoBitrate          sql.NullInt64  `db:"max_video_bitrate" json:"maxVideoBitrate,omitempty"`
+	// AllowDownload is the sharer's choice for this link; the server-wide setting
+	// can still switch downloads off for every link.
+	AllowDownload            bool           `db:"allow_download" json:"allowDownload"`
 	RevokedAt                sql.NullTime   `db:"revoked_at" json:"revokedAt,omitempty"`
 	LastActivityAt           sql.NullTime   `db:"last_activity_at" json:"lastActivityAt,omitempty"`
 }
@@ -99,6 +102,11 @@ func (s *Share) PlayLimitReached() bool {
 	return s.MaxTotalPlays.Valid && int64(s.TotalPlays) >= s.MaxTotalPlays.Int64
 }
 
+// DownloadsAllowed combines the sharer's choice with the server-wide switch.
+func (s *Share) DownloadsAllowed(serverAllows bool) bool {
+	return serverAllows && s.AllowDownload
+}
+
 // HasEpisodes reports whether the share is a season or series, whose episodes
 // are played and downloaded one by one.
 func (s *Share) HasEpisodes() bool {
@@ -133,6 +141,9 @@ type CreateShareRequest struct {
 	MaxVideoHeight       *int    `json:"maxVideoHeight,omitempty"`
 	MaxVideoBitrate      *int    `json:"maxVideoBitrate,omitempty"`
 	Password             *string `json:"password,omitempty"`
+	// AllowDownload is a pointer so an older client that does not send it gets
+	// the default - downloads on - rather than false.
+	AllowDownload        *bool   `json:"allowDownload,omitempty"`
 }
 
 type CreateShareResponse struct {
@@ -265,6 +276,7 @@ type ShareListItem struct {
 	RevokedAt                *time.Time `db:"revoked_at" json:"revokedAt,omitempty"`
 	MaxVideoHeight           *int64     `json:"maxVideoHeight,omitempty"`
 	HasPassword              bool       `json:"hasPassword"`
+	AllowDownload            bool       `json:"allowDownload"`
 	// PublicURL is built from PublicBaseURL, not from the caller's view of the
 	// backend, so clients never have to reconstruct it from their own base URL.
 	PublicURL string `json:"publicUrl"`

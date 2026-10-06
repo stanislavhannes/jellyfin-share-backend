@@ -75,6 +75,7 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 		ItemType:       item.Type,
 		ExpiresAt:      expiresAt,
 		CreatedAt:      time.Now(),
+		AllowDownload:  req.AllowDownload == nil || *req.AllowDownload,
 	}
 
 	// Set optional fields
@@ -182,6 +183,9 @@ func (h *AdminHandler) ListShares(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:                s.ExpiresAtPtr(),
 			CreatedAt:                s.CreatedAt,
 			HasPassword:              s.RequiresPassword(),
+			// The effective permission, as viewers meet it - not the stored choice
+			// alone, which the server-wide switch can override.
+			AllowDownload:            s.DownloadsAllowed(h.cfg.AllowDownloads),
 			PublicURL:                h.cfg.PublicBaseURL + "/s/" + s.PublicToken,
 		}
 		if s.MaxTotalPlays.Valid {

@@ -68,7 +68,7 @@ func (h *PublicHandler) GetShareInfo(w http.ResponseWriter, r *http.Request) {
 	h.db.LogAuditEvent(r.Context(), database.AuditEventShareAccessed, &share.ID, nil, nil, &ipHash, nil)
 
 	info := share.ToPublicInfo(h.cfg.PublicBaseURL)
-	info.AllowDownload = h.cfg.AllowDownloads
+	info.AllowDownload = share.DownloadsAllowed(h.cfg.AllowDownloads)
 
 	// Fetch extended metadata from Jellyfin
 	item, err := h.jf.GetItem(r.Context(), share.JellyfinItemID)

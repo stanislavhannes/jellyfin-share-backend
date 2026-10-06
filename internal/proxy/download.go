@@ -30,8 +30,8 @@ func (p *StreamProxy) ServeDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Checked again, not just at issue: the switch may have gone off since.
-	if !p.cfg.AllowDownloads {
-		http.Error(w, "downloads are disabled", http.StatusForbidden)
+	if !share.DownloadsAllowed(p.cfg.AllowDownloads) {
+		http.Error(w, "downloads are not available for this link", http.StatusForbidden)
 		return
 	}
 
