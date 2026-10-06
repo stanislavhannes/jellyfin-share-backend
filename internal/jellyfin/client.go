@@ -276,16 +276,47 @@ type EpisodeInfo struct {
 	SeasonNumber      int    `json:"seasonNumber,omitempty"`
 }
 
-// GetSeriesEpisodes returns every episode of a series in one request, ordered by
-// season then episode, instead of walking the seasons one call at a time.
-func (c *Client) GetSeriesEpisodes(ctx context.Context, seriesID string) ([]EpisodeInfo, error) {
+// GetEpisodesFor returns the episodes a Season or Series item contains, in
+// running order. Any other item type has none.
+func (c *Client) GetEpisodesFor(ctx context.Context, itemType, itemID string) ([]EpisodeInfo, error) {
+	items, err := c.episodeItems(ctx, itemType, itemID, "")
+	if err != nil {
+		return nil, err
+	}
+	episodes := make([]EpisodeInfo, 0, len(items))
+	for _, item := range items {
+		episodes = append(episodes, EpisodeInfo{
+			ID:             item.ID,
+			Name:           item.Name,
+			IndexNumber:    item.IndexNumber,
+			SeasonNumber:   item.ParentIndexNumber,
+			Overview:       item.Overview,
+			RuntimeSeconds: TicksToSeconds(item.RunTimeTicks),
+			HasPoster:      item.ImageTags.Primary != "",
+			PremiereDate:   item.PremiereDate,
+		})
+	}
+	return episodes, nil
+}
+
+// episodeItems is the one episode query: every episode below a Season or
+// Series, ordered by season then episode. A single recursive request rather
+// than one per season - this runs on unauthenticated endpoints, and a 20-season
+// show would otherwise cost 21 upstream calls.
+func (c *Client) episodeItems(ctx context.Context, itemType, itemID, fields string) ([]ItemInfo, error) {
+	if itemType != "Season" && itemType != "Series" {
+		return nil, nil
+	}
 	if c.userID == "" {
 		return nil, fmt.Errorf("user ID not set - call FetchAndSetUserID first")
 	}
 
 	path := fmt.Sprintf(
 		"/Users/%s/Items?ParentId=%s&Recursive=true&IncludeItemTypes=Episode&SortBy=ParentIndexNumber,IndexNumber&SortOrder=Ascending",
-		c.userID, seriesID)
+		c.userID, itemID)
+	if fields != "" {
+		path += "&Fields=" + fields
+	}
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
@@ -303,21 +334,7 @@ func (c *Client) GetSeriesEpisodes(ctx context.Context, seriesID string) ([]Epis
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode episodes: %w", err)
 	}
-
-	episodes := make([]EpisodeInfo, 0, len(result.Items))
-	for _, item := range result.Items {
-		episodes = append(episodes, EpisodeInfo{
-			ID:             item.ID,
-			Name:           item.Name,
-			IndexNumber:    item.IndexNumber,
-			SeasonNumber:   item.ParentIndexNumber,
-			Overview:       item.Overview,
-			RuntimeSeconds: item.RunTimeTicks / 10000000,
-			HasPoster:      item.ImageTags.Primary != "",
-			PremiereDate:   item.PremiereDate,
-		})
-	}
-	return episodes, nil
+	return result.Items, nil
 }
 
 // GetSeasonEpisodes returns all episodes in a season

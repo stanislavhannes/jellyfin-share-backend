@@ -91,10 +91,18 @@ func (s *Share) RequiresPassword() bool {
 }
 
 func (s *Share) CanStartNewPlay() bool {
-	if s.MaxTotalPlays.Valid && int64(s.TotalPlays) >= s.MaxTotalPlays.Int64 {
-		return false
-	}
-	return s.CanContinuePlay()
+	return !s.PlayLimitReached() && s.CanContinuePlay()
+}
+
+// PlayLimitReached reports whether the share's total-play budget is spent.
+func (s *Share) PlayLimitReached() bool {
+	return s.MaxTotalPlays.Valid && int64(s.TotalPlays) >= s.MaxTotalPlays.Int64
+}
+
+// HasEpisodes reports whether the share is a season or series, whose episodes
+// are played and downloaded one by one.
+func (s *Share) HasEpisodes() bool {
+	return s.ItemType == "Season" || s.ItemType == "Series"
 }
 
 // CanContinuePlay is CanStartNewPlay without the total-play limit. An episode
