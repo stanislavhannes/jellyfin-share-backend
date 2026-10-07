@@ -16,9 +16,9 @@ func (db *DB) CreateShare(ctx context.Context, share *models.Share) error {
 			id, public_token, jellyfin_item_id, jellyfin_user_id, title, overview,
 			runtime_seconds, poster_path, backdrop_path, item_type, max_total_plays,
 			max_concurrent_viewers, expires_at, password_hash, created_at,
-			max_video_height, max_video_bitrate
+			max_video_height, max_video_bitrate, allow_download
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 		)`
 
 	_, err := db.ExecContext(ctx, query,
@@ -26,7 +26,7 @@ func (db *DB) CreateShare(ctx context.Context, share *models.Share) error {
 		share.Title, share.Overview, share.RuntimeSeconds, share.PosterPath,
 		share.BackdropPath, share.ItemType, share.MaxTotalPlays, share.MaxConcurrentViewers,
 		share.ExpiresAt, share.PasswordHash, share.CreatedAt,
-		share.MaxVideoHeight, share.MaxVideoBitrate,
+		share.MaxVideoHeight, share.MaxVideoBitrate, share.AllowDownload,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create share: %w", err)
@@ -149,6 +149,21 @@ func (db *DB) UpdateShare(ctx context.Context, id uuid.UUID, maxTotalPlays, maxC
 	_, err := db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to update share: %w", err)
+	}
+	return nil
+}
+
+// IncrementTotalPlays charges a play without taking a concurrent-viewer slot,
+// for a download: there is no session that would later give the slot back.
+func (db *DB) IncrementTotalPlays(ctx context.Context, shareID uuid.UUID) error {
+	query := `
+		UPDATE shares
+		SET total_plays = total_plays + 1,
+		    last_activity_at = NOW()
+		WHERE id = $1`
+
+	if _, err := db.ExecContext(ctx, query, shareID); err != nil {
+		return fmt.Errorf("failed to increment total plays: %w", err)
 	}
 	return nil
 }

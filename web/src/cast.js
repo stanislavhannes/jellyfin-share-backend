@@ -126,7 +126,7 @@ export async function ensureCastSession() {
  * URL comes from the server's configured public base, which is the address the
  * receiver can reach, while the page may have been opened on a different host.
  */
-export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl, subtitleLanguage, durationSeconds }) {
+export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl, subtitleLanguage, durationSeconds, startTime }) {
   const session = await ensureCastSession();
 
   const abs = (u) => (u ? new URL(u, url).href : undefined);
@@ -159,6 +159,9 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
   const load = (withTracks) => {
     const req = new chrome.cast.media.LoadRequest(info);
     req.autoplay = true;
+    // Resuming: the receiver seeks before it starts, so the viewer never sees
+    // the opening seconds flash by.
+    if (startTime > 0) req.currentTime = startTime;
     if (withTracks) req.activeTrackIds = [1];
     return session.loadMedia(req);
   };

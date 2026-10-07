@@ -40,6 +40,13 @@ at, whether it is still live, how often it has been played, and when it expires.
 - **Audio and Subtitle Tracks** - Selectable before playback; text subtitles are
   delivered as a WebVTT sidecar, so the video needs no transcode and the viewer can
   switch them off
+- **Downloads** - The original file of a film or episode, or a whole season or
+  series as one ZIP filed by season. Each download counts as one play; whoever
+  shares a link can switch downloads off for it
+- **Resume and Next Episode** - The page remembers in the viewer's browser where
+  they stopped, offers to resume and ticks what was watched; near the end of an
+  episode a card offers the next one, which starts on its own unless the viewer
+  cancels
 - **Per-Share Quality** - Cap a single link at 1080p, 720p or 480p without touching
   the library or the server settings
 - **Designed Interface** - The share page leads with the artwork Jellyfin already
@@ -126,6 +133,7 @@ Navigate to `http://localhost:8097/admin` and enter your `BACKEND_API_KEY`.
 | `JFSHARE_MAX_TRANSCODE_BITRATE` | Upper bound for a transcode target, in bits per second. Only applies when Jellyfin transcodes; direct stream is unaffected | `20000000` |
 | `JFSHARE_STREAM_VIDEO_CODEC` | Fallback video codec, used when the viewer's browser cannot decode the source. A source that already matches is stream-copied, not re-encoded. Empty sends no preference, which lets AV1/HEVC reach the browser untouched | `h264` |
 | `JFSHARE_STREAM_AUDIO_CODEC` | Audio codec the share page can play, same rule | `aac` |
+| `JFSHARE_ALLOW_DOWNLOADS` | Offer downloads of the original file, and of a season or series as one ZIP. Each download counts as one play | `true` |
 
 ## API Reference
 
@@ -148,9 +156,14 @@ X-Backend-Key: your-api-key
   "maxTotalPlays": 5,
   "maxConcurrentViewers": 2,
   "maxVideoHeight": 720,
-  "maxVideoBitrate": 4000000
+  "maxVideoBitrate": 4000000,
+  "allowDownload": true
 }
 ```
+
+`expiresInMinutes` defaults to 30 days when omitted. `allowDownload` defaults to
+`true` when omitted, so a client that predates it keeps offering downloads;
+`JFSHARE_ALLOW_DOWNLOADS=false` overrides it for every share.
 
 #### List Shares
 ```http
@@ -243,6 +256,25 @@ GET /api/public/shares/{token}/episodes
 POST /api/public/shares/{token}/episodes/{episodeId}/play
 ```
 
+#### Download
+```http
+POST /api/public/shares/{token}/download
+POST /api/public/shares/{token}/episodes/{episodeId}/download
+POST /api/public/shares/{token}/episodes/download
+GET  /api/public/downloads/{ticket}
+```
+
+The POSTs - a film or episode share itself, one episode of a season or series,
+or every episode as one ZIP - check the share and its password, charge one play,
+and answer with a `downloadUrl`. That URL carries a signed ticket valid for two
+hours; the GET streams the original file with Range support, so an interrupted
+download resumes without being charged again. The ZIP is stored, not
+compressed, files episodes by season, and leaves out episodes the library lists
+without a file.
+
+Refused with 403 when the share's play limit is spent or downloads are off for
+it. A download takes no concurrent-viewer slot.
+
 #### Finish Playback
 ```http
 POST /api/public/sessions/{sessionId}/finish
@@ -314,9 +346,10 @@ that matters to you.
 ├── internal/
 │   ├── config/          # Configuration management
 │   ├── database/        # Database operations & migrations
+│   ├── download/        # Download tickets and file naming
 │   ├── handlers/        # HTTP handlers (admin & public)
 │   ├── jellyfin/        # Jellyfin API client
-│   ├── middleware/      # Auth, rate limiting, sessions
+│   ├── middleware/      # Auth, rate limiting, sessions, request logging
 │   ├── models/          # Data models
 │   └── proxy/           # Stream, image & subtitle proxy
 ├── migrations/          # SQL migrations
@@ -348,6 +381,10 @@ cd web && npm run build
 - **Automatic session cleanup** - Stale sessions are automatically terminated
 - **Credentials stay server-side** - The Jellyfin key travels as a request header, never
   in a URL that could be echoed back into a manifest the viewer receives
+- **Downloads are ticketed** - The item a download serves is checked against the share
+  when it is requested and carried in an HMAC-signed ticket that expires after two
+  hours; the file request cannot be pointed anywhere else, and the ticket is masked
+  in the request log
 - **Playback is pinned to the session** - The item, media source, codec, bitrate and
   track selection are resolved once when playback starts. The proxy never takes them
   from a request, so a share link cannot be pointed at another item
@@ -417,6 +454,33 @@ Jellyfin before being fixed; the numbers below are measured.
   through the browser. The Cast button is hidden on an insecure origin, with one
   exception: browsers treat `localhost` as secure, so it appears there and then
   hands the receiver a `localhost` URL it cannot resolve.
+
+**Downloads, resume and the next episode**
+
+- **Downloads.** A film or an episode can be saved as the original file, and a
+  season or series as one ZIP filed by season. Each download costs one play, so a
+  limited link cannot be bypassed by saving the file; a whole-series ZIP costs one
+  as well. Whoever shares a link chooses whether it offers downloads (on by
+  default), and the server can switch them off for every link. A download is
+  always the original file: a share's quality cap applies to streaming only.
+- **Resume.** The page remembers, in the viewer's browser, where they stopped -
+  per film and per episode. It then offers *Resume* with the time beside *From the
+  start*; a series picks up on the episode last watched, or on the next one once
+  that was finished. Each episode row shows how much of it has been seen, and a
+  film or episode watched to the end is ticked. Nothing is stored server-side: a
+  link has no account behind it, and a forwarded link should not open on the
+  sender's position.
+- **Next episode.** In an episode's last 30 seconds a card in the bottom-right
+  corner names the next one. *Play now* starts it at once; left alone it starts
+  when the episode ends; *Cancel* or the close button returns to the episode list.
+  When a film or the last episode ends, the page returns to the share page and
+  leaves fullscreen.
+
+  The card stays visible in fullscreen: the video's own fullscreen control is
+  redirected to the whole page, since a fullscreen `<video>` element hides
+  everything the page draws over it, and fullscreen carries on from one episode
+  to the next. The player's separate fullscreen button was removed - it only
+  repeated the video's own.
 
 **Fixes**
 

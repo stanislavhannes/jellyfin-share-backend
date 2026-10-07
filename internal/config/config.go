@@ -27,6 +27,9 @@ type Config struct {
 	// to reach the browser untouched.
 	StreamVideoCodec string
 	StreamAudioCodec string
+	// AllowDownloads lets viewers save the original file - and, for a season or
+	// series, every episode as one ZIP. A download is charged as one play.
+	AllowDownloads bool
 }
 
 func Load() *Config {
@@ -44,6 +47,7 @@ func Load() *Config {
 		MaxTranscodeBitrate:     getEnvInt("JFSHARE_MAX_TRANSCODE_BITRATE", 20000000),
 		StreamVideoCodec:        getEnvAllowEmpty("JFSHARE_STREAM_VIDEO_CODEC", "h264"),
 		StreamAudioCodec:        getEnvAllowEmpty("JFSHARE_STREAM_AUDIO_CODEC", "aac"),
+		AllowDownloads:          getEnvBool("JFSHARE_ALLOW_DOWNLOADS", true),
 	}
 }
 
@@ -59,6 +63,15 @@ func getEnv(key, defaultValue string) string {
 func getEnvAllowEmpty(key, defaultValue string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value
+	}
+	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
+		}
 	}
 	return defaultValue
 }
