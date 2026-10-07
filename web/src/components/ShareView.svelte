@@ -402,8 +402,12 @@
   // Autoplay in the browser - and with it AirPlay, which mirrors the same element,
   // so an episode finishing on an Apple TV arrives here as well.
   async function handlePlaybackEnded() {
-    // A single item has nothing to advance to; leave the player as it was.
-    if (!isSeasonOrSeries) return;
+    // A film, like the last episode of a series, has nothing to follow it:
+    // back to the share page, where it now shows as watched.
+    if (!isSeasonOrSeries) {
+      handlePlayerClose();
+      return;
+    }
 
     const next = nextEpisode(currentEpisodeId);
     if (!next) {
