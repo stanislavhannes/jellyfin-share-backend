@@ -156,6 +156,7 @@
   }
 
   onDestroy(() => {
+    clearTimeout(idleTimer);
     cleanup();
   });
 
@@ -323,14 +324,17 @@
   // every episode, and removing the fullscreen element leaves fullscreen - the
   // viewer would drop out of it at each autoplay. The page survives the swap.
   //
-  // The video's own fullscreen control (and a double-click) put the element
-  // itself fullscreen, so that is caught here and handed up. The click's
-  // activation is still live when this event arrives, which is what allows the
-  // new request; a browser that refuses it leaves fullscreen instead.
-  const page = document.documentElement;
+  // That needs a control of our own. The video's control fullscreens the video
+  // element, and handing that up to the page afterwards does not work: the
+  // browser spends the click on its own request and refuses the second one, so
+  // fullscreen opened and closed at once. Where the browser lets the native
+  // control be hidden (controlsList), this player's button takes its place;
+  // elsewhere - Safari, Firefox, the iPhone - the native one stays, and the
+  // video goes fullscreen on its own.
+  const ownFullscreenControl = 'controlsList' in HTMLMediaElement.prototype;
   // Read, not assumed: after autoplay this instance starts inside a page that
   // is already fullscreen, and no fullscreenchange will say so.
-  let pageFullscreen = fullscreenElement() === page;
+  let isFullscreen = !!fullscreenElement();
   // The iPhone's native video fullscreen, which Escape must not close the
   // player under.
   let videoFullscreen = false;
@@ -339,22 +343,23 @@
     videoFullscreen = event.type === 'webkitbeginfullscreen';
   }
 
-  async function handleFullscreenChange() {
-    if (document.fullscreenElement === videoElement && page.requestFullscreen) {
-      // Already fullscreen through the page, the control means "leave".
-      const leaving = pageFullscreen;
-      try {
-        await document.exitFullscreen();
-        if (leaving) {
-          if (document.fullscreenElement) await document.exitFullscreen();
-        } else {
-          await page.requestFullscreen();
-        }
-      } catch (e) {
-        // Refused: nothing left to do but stay out of fullscreen.
-      }
-    }
-    pageFullscreen = fullscreenElement() === page;
+  function handleFullscreenChange() {
+    isFullscreen = !!fullscreenElement();
+  }
+
+  function handleDoubleClick() {
+    if (ownFullscreenControl) toggleFullscreen();
+  }
+
+  // In fullscreen the title bar steps aside once the pointer rests, the way
+  // the video's own controls do, and comes back when it moves.
+  let idle = false;
+  let idleTimer;
+
+  function wake() {
+    idle = false;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => (idle = true), 2500);
   }
 
   function toggleFullscreen() {
@@ -401,15 +406,31 @@
      never runs; pagehide is the last moment the page is still there to save the
      exact position. A tab sent to the background on a phone may never come
      back, which is what the visibility change covers. -->
-<svelte:window on:keydown={handleKeydown} on:pagehide={reportProgress} />
+<svelte:window on:keydown={handleKeydown} on:pagehide={reportProgress}
+               on:mousemove={wake} on:touchstart={wake} />
 <svelte:document on:visibilitychange={() => document.visibilityState === 'hidden' && reportProgress()} />
 
-<div class="player">
+<div class="player" class:player--idle={idle}>
   <!-- The video is the page. Chrome floats over it and gets out of the way.
-       Fullscreen is the video's own control; a second one here only repeated it. -->
+       The fullscreen button only appears where it replaces the video's own. -->
   <header class="player__bar">
     <h2 class="player__title">{title}</h2>
     <div class="player__tools">
+      {#if ownFullscreenControl}
+        <button class="glyph" on:click={toggleFullscreen}
+                title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+          {#if isFullscreen}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 3v3a2 2 0 01-2 2H3M21 8h-3a2 2 0 01-2-2V3M16 21v-3a2 2 0 012-2h3M3 16h3a2 2 0 012 2v3"/>
+            </svg>
+          {:else}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3"/>
+            </svg>
+          {/if}
+        </button>
+      {/if}
       <button class="glyph" on:click={handleClose} title="Back (Esc)" aria-label="Back to the share">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
           <path d="M18 6L6 18M6 6l12 12"/>
@@ -435,6 +456,9 @@
     <video
       bind:this={videoElement}
       controls
+      controlslist={ownFullscreenControl ? 'nofullscreen' : undefined}
+      class:own-fullscreen={ownFullscreenControl}
+      on:dblclick={handleDoubleClick}
       playsinline
       autoplay
       x-webkit-airplay="allow"
@@ -512,7 +536,15 @@
   .player__bar > * { pointer-events: auto; }
 
   /* Fullscreen is for watching: the title bar steps aside, Esc leaves. */
-  :global(:root:fullscreen) .player__bar { display: none; }
+  .player__bar { transition: opacity var(--dur-short) var(--ease-out); }
+
+  :global(:root:fullscreen) .player--idle { cursor: none; }
+
+  :global(:root:fullscreen) .player--idle .player__bar,
+  :global(:root:fullscreen) .player--idle .player__bar > * {
+    opacity: 0;
+    pointer-events: none;
+  }
 
   .player__title {
     font-size: var(--text-md);
@@ -779,6 +811,10 @@
     outline: 2px solid var(--color-focus);
     outline-offset: 3px;
   }
+
+  /* controlsList only greys the native button out in Chrome; a disabled twin
+     beside the player's own would read as broken. */
+  video.own-fullscreen::-webkit-media-controls-fullscreen-button { display: none; }
 
   video::cue {
     background: var(--scrim-strong);
