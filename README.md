@@ -73,7 +73,7 @@ at, whether it is still live, how often it has been played, and when it expires.
 ### Prerequisites
 
 - Docker and Docker Compose
-- Jellyfin server with API key
+- Jellyfin server with API key (10.11 or 12.x — both are supported)
 - PostgreSQL (included in docker-compose)
 
 ### 1. Clone and Configure
@@ -476,11 +476,13 @@ Jellyfin before being fixed; the numbers below are measured.
   When a film or the last episode ends, the page returns to the share page and
   leaves fullscreen.
 
-  The card stays visible in fullscreen: the video's own fullscreen control is
-  redirected to the whole page, since a fullscreen `<video>` element hides
-  everything the page draws over it, and fullscreen carries on from one episode
-  to the next. The player's separate fullscreen button was removed - it only
-  repeated the video's own.
+  The card stays visible in fullscreen because fullscreen goes to the whole
+  page - a fullscreen `<video>` element hides everything the page draws over it -
+  and it carries on from one episode to the next. That takes the player's own
+  fullscreen button: in Chrome, Edge and other Chromium browsers it replaces the
+  video's, which would only fullscreen the video. Safari, Firefox and the iPhone
+  keep their native control; the card is then not visible in fullscreen, and
+  autoplay still moves on to the next episode.
 
 **Fixes**
 

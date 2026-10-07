@@ -10,6 +10,7 @@
            castDeviceName } from '../cast.js';
   import { MAIN, loadProgress, saveProgress, resumePosition, seriesResumeTarget,
            watchedFraction, isWatched, formatClock } from '../progress.js';
+  import { fullscreenElement, exitFullscreen } from '../fullscreen.js';
 
   export let shareInfo;
   export let token;
@@ -515,7 +516,7 @@
   // screen. Autoplay swaps the player without coming through here, so
   // fullscreen survives the move to the next episode.
   function handlePlayerClose() {
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    if (fullscreenElement()) exitFullscreen();
     isPlaying = false;
     playbackData = null;
     currentPlayingTitle = '';
