@@ -3,8 +3,13 @@
 # Multi-stage build for minimal final image
 # =============================================================================
 
+# The two build stages run on the machine doing the build ($BUILDPLATFORM), not
+# under emulation for each target: the frontend bundle is the same for every
+# architecture, and Go cross-compiles. Under QEMU, npm ci for arm64 could hang
+# for the better part of an hour.
+
 # Stage 1: Build frontend
-FROM node:20-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
 
 WORKDIR /app/web
 
@@ -17,7 +22,12 @@ COPY web/ ./
 RUN npm run build
 
 # Stage 2: Build backend
-FROM golang:1.23-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS backend-builder
+
+# Set by buildx for each image it builds; a plain docker build fills them in
+# for the machine it runs on.
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN apk add --no-cache git ca-certificates tzdata
 
@@ -33,8 +43,9 @@ COPY . .
 # Copy built frontend for embedding
 COPY --from=frontend-builder /app/web/dist ./web/dist
 
-# Build optimized binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+# Build optimized binary for the image's architecture. This was fixed to amd64,
+# which put an x86-64 binary into the arm64 image as well.
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -ldflags="-w -s -X main.Version=$(date +%Y%m%d)" \
     -o /jfshare ./cmd/server
 
