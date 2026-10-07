@@ -64,9 +64,9 @@
   {#if isAdminRoute}
     <Admin />
   {:else if loading}
-    <div class="loading-container">
-      <div class="spinner"></div>
-      <p>Loading...</p>
+    <div class="boot">
+      <div class="boot__meter"></div>
+      <p class="boot__label">Opening the link</p>
     </div>
   {:else if error}
     <ErrorView {error} />
@@ -77,32 +77,48 @@
 
 <style>
   main {
-    min-height: 100vh;
+    min-height: 100dvh;
   }
 
-  .loading-container {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
-    gap: 1rem;
+  /* Matches the pre-JS boot state in index.html exactly, so the handover
+     from static HTML to Svelte is invisible. */
+  .boot {
+    display: grid;
+    place-items: center;
+    gap: var(--space-md);
+    min-height: 100dvh;
   }
 
-  .loading-container p {
-    color: #a0a0a0;
+  .boot__meter {
+    width: 7.5rem;
+    height: 2px;
+    background: var(--color-rule);
+    overflow: hidden;
   }
 
-  .spinner {
-    width: 48px;
-    height: 48px;
-    border: 4px solid rgba(255,255,255,0.1);
-    border-top-color: #00d4ff;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
+  .boot__meter::after {
+    content: "";
+    display: block;
+    width: 40%;
+    height: 100%;
+    background: var(--color-accent);
+    animation: boot-sweep 1.1s var(--ease-in-out) infinite;
   }
 
-  @keyframes spin {
-    to { transform: rotate(360deg); }
+  .boot__label {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+
+  @keyframes boot-sweep {
+    0%   { transform: translateX(-110%); }
+    100% { transform: translateX(260%); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .boot__meter::after { width: 100%; }
   }
 </style>

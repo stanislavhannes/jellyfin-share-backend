@@ -2,47 +2,64 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#1a1a2e" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- sRGB equivalent of --color-paper; a meta attribute cannot take a var(). -->
+    <meta name="theme-color" content="#060d11" />
     <title>Shared Media</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@400;500&family=Instrument+Serif&display=swap"
+    />
+    <link rel="stylesheet" href="/src/tokens.css" />
+
     <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
+      /* Boot only. Every value comes through a token — nothing is inlined here. */
+      #app { min-height: 100dvh; }
+
+      .boot {
+        display: grid;
+        place-items: center;
+        gap: var(--space-md);
+        min-height: 100dvh;
       }
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        color: #e8e8e8;
-        min-height: 100vh;
+      .boot__meter {
+        width: 7.5rem;
+        height: 2px;
+        background: var(--color-rule);
+        overflow: hidden;
       }
-      #app {
-        min-height: 100vh;
+      .boot__meter::after {
+        content: "";
+        display: block;
+        width: 40%;
+        height: 100%;
+        background: var(--color-accent);
+        animation: boot-sweep 1.1s var(--ease-in-out) infinite;
       }
-      .loading-container {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 100vh;
+      .boot__label {
+        font-family: var(--font-outlier);
+        font-size: var(--text-sm);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--color-muted);
       }
-      .spinner {
-        width: 48px;
-        height: 48px;
-        border: 4px solid rgba(255,255,255,0.1);
-        border-top-color: #00d4ff;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
+      @keyframes boot-sweep {
+        0%   { transform: translateX(-110%); }
+        100% { transform: translateX(260%); }
       }
-      @keyframes spin {
-        to { transform: rotate(360deg); }
+      @media (prefers-reduced-motion: reduce) {
+        .boot__meter::after { width: 100%; }
       }
     </style>
   </head>
   <body>
     <div id="app">
-      <div class="loading-container">
-        <div class="spinner"></div>
+      <div class="boot">
+        <div class="boot__meter"></div>
+        <p class="boot__label">Opening the link</p>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>

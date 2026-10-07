@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/config"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/database"
+	"github.com/jellyfin-share/jellyfin-share-backend/internal/download"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/jellyfin"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/models"
 )
@@ -21,14 +22,16 @@ type StreamProxy struct {
 	db         *database.DB
 	jf         *jellyfin.Client
 	cfg        *config.Config
+	downloads  *download.Signer
 	httpClient *http.Client
 }
 
-func NewStreamProxy(db *database.DB, jf *jellyfin.Client, cfg *config.Config) *StreamProxy {
+func NewStreamProxy(db *database.DB, jf *jellyfin.Client, cfg *config.Config, downloads *download.Signer) *StreamProxy {
 	return &StreamProxy{
-		db:  db,
-		jf:  jf,
-		cfg: cfg,
+		db:        db,
+		jf:        jf,
+		cfg:       cfg,
+		downloads: downloads,
 		httpClient: &http.Client{
 			Timeout: 0, // No timeout for streaming
 			Transport: &http.Transport{
@@ -100,9 +103,9 @@ func (p *StreamProxy) ServeStream(w http.ResponseWriter, r *http.Request) {
 func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session *models.ShareSession) string {
 	baseURL := p.jf.BaseURL()
 
-	// Never carry the credential in the URL - proxyRequest authorizes via header.
-	// Deleting rather than merely skipping also strips any api_key a viewer replays
-	// back to us from a manifest generated before this changed.
+	// Auth goes in the Authorization header (set in proxyRequest); strip any
+	// api_key echoed back from Jellyfin-generated manifests so it never
+	// reaches viewers.
 	params, _ := url.ParseQuery(query)
 	params.Del("api_key")
 	// Pin the source to the same item as the path. Jellyfin honours MediaSourceId over
@@ -179,7 +182,22 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session
 	if strings.HasSuffix(path, ".m3u8") {
 		// HLS manifest
 		if path == "master.m3u8" {
-			params.Set("DeviceId", "jfshare-backend")
+			// Jellyfin keys a running transcode by DeviceId and item. With one
+			// constant DeviceId for the whole backend, starting the same episode a
+			// second time lands on the job the first playback started - and that job
+			// carries the audio and subtitle streams it was started with, not the
+			// ones this session just pinned. The viewer changes the language, picks
+			// the episode they already watched, and gets the old track back, while
+			// an episode they have not played yet honours the choice.
+			//
+			// Scoping the identity to the session makes each playback its own
+			// device, so there is no job to inherit. It also stops two viewers of
+			// the same share sharing one device identity on the Jellyfin side.
+			deviceID := "jfshare-backend"
+			if session != nil {
+				deviceID = "jfshare-" + session.ID.String()
+			}
+			params.Set("DeviceId", deviceID)
 			return baseURL + "/Videos/" + itemID + "/master.m3u8?" + params.Encode()
 		}
 		// Sub-playlist
@@ -208,7 +226,9 @@ func (p *StreamProxy) proxyRequest(w http.ResponseWriter, r *http.Request, targe
 		http.Error(w, "proxy error", http.StatusBadGateway)
 		return
 	}
-	p.jf.AuthorizeRequest(req)
+	req.Header.Set("Authorization", p.jf.AuthHeader())
+
+	req.Header.Set("Authorization", p.jf.AuthHeader())
 
 	// Copy relevant headers
 	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
@@ -312,7 +332,7 @@ func (p *StreamProxy) ServeSubtitle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error", http.StatusInternalServerError)
 		return
 	}
-	p.jf.AuthorizeRequest(req)
+	req.Header.Set("Authorization", p.jf.AuthHeader())
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -362,16 +382,19 @@ func (p *StreamProxy) ServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sizing params only; the credential travels as a header. Encoding them through
-	// url.Values also stops a caller from smuggling extra params via these values.
-	params := url.Values{}
-	for _, name := range []string{"maxWidth", "maxHeight", "quality"} {
-		if v := r.URL.Query().Get(name); v != "" {
-			params.Set(name, v)
-		}
+	// Add query params for sizing
+	sizing := url.Values{}
+	if maxWidth := r.URL.Query().Get("maxWidth"); maxWidth != "" {
+		sizing.Set("maxWidth", maxWidth)
 	}
-	if len(params) > 0 {
-		imageURL += "?" + params.Encode()
+	if maxHeight := r.URL.Query().Get("maxHeight"); maxHeight != "" {
+		sizing.Set("maxHeight", maxHeight)
+	}
+	if quality := r.URL.Query().Get("quality"); quality != "" {
+		sizing.Set("quality", quality)
+	}
+	if len(sizing) > 0 {
+		imageURL += "?" + sizing.Encode()
 	}
 
 	// Proxy with caching enabled
@@ -380,7 +403,7 @@ func (p *StreamProxy) ServeImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error", http.StatusInternalServerError)
 		return
 	}
-	p.jf.AuthorizeRequest(req)
+	req.Header.Set("Authorization", p.jf.AuthHeader())
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {

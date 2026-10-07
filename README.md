@@ -2,6 +2,28 @@
 
 A secure, self-hosted solution for creating temporary, shareable links to your Jellyfin media content. Share movies and TV episodes with friends and family without giving them access to your Jellyfin server.
 
+This is a fork of [monxas/jellyfin-share-backend](https://github.com/monxas/jellyfin-share-backend)
+with Jellyfin 12 support, two security fixes and a reworked streaming path — see
+[What this fork changes](#what-this-fork-changes).
+
+## What it looks like
+
+A shared film. The page leads with the artwork Jellyfin already holds, states the
+link's terms in words rather than badges, and lets the viewer pick audio and
+subtitle tracks before anything starts playing.
+
+![A shared film: backdrop, poster, track selection, and Play and Cast buttons](docs/screenshots/share-movie.png)
+
+A shared series lists its episodes, each one startable on its own — or sent to a
+television once a receiver is connected.
+
+![A shared series with its episode list](docs/screenshots/share-series.png)
+
+The admin surface is one scannable index of every link handed out: what it points
+at, whether it is still live, how often it has been played, and when it expires.
+
+![The admin dashboard listing every share with its status, plays and expiry](docs/screenshots/admin-dashboard.png)
+
 ## Features
 
 - **Temporary Share Links** - Create time-limited links that automatically expire
@@ -18,8 +40,19 @@ A secure, self-hosted solution for creating temporary, shareable links to your J
 - **Audio and Subtitle Tracks** - Selectable before playback; text subtitles are
   delivered as a WebVTT sidecar, so the video needs no transcode and the viewer can
   switch them off
+- **Downloads** - The original file of a film or episode, or a whole season or
+  series as one ZIP filed by season. Each download counts as one play; whoever
+  shares a link can switch downloads off for it
+- **Resume and Next Episode** - The page remembers in the viewer's browser where
+  they stopped, offers to resume and ticks what was watched; near the end of an
+  episode a card offers the next one, which starts on its own unless the viewer
+  cancels
 - **Per-Share Quality** - Cap a single link at 1080p, 720p or 480p without touching
   the library or the server settings
+- **Designed Interface** - The share page leads with the artwork Jellyfin already
+  holds and states the link's terms (expiry, plays left) in plain language; the
+  admin surface is a single scannable index. Both follow one locked design system
+  ([`design.md`](design.md)) anchored on Jellyfin's own accent colour
 
 ## Architecture
 
@@ -46,7 +79,7 @@ A secure, self-hosted solution for creating temporary, shareable links to your J
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/monxas/jellyfin-share-backend.git
+git clone https://github.com/stanislavhannes/jellyfin-share-backend.git
 cd jellyfin-share-backend
 
 # Copy example environment file
@@ -100,6 +133,7 @@ Navigate to `http://localhost:8097/admin` and enter your `BACKEND_API_KEY`.
 | `JFSHARE_MAX_TRANSCODE_BITRATE` | Upper bound for a transcode target, in bits per second. Only applies when Jellyfin transcodes; direct stream is unaffected | `20000000` |
 | `JFSHARE_STREAM_VIDEO_CODEC` | Fallback video codec, used when the viewer's browser cannot decode the source. A source that already matches is stream-copied, not re-encoded. Empty sends no preference, which lets AV1/HEVC reach the browser untouched | `h264` |
 | `JFSHARE_STREAM_AUDIO_CODEC` | Audio codec the share page can play, same rule | `aac` |
+| `JFSHARE_ALLOW_DOWNLOADS` | Offer downloads of the original file, and of a season or series as one ZIP. Each download counts as one play | `true` |
 
 ## API Reference
 
@@ -122,9 +156,14 @@ X-Backend-Key: your-api-key
   "maxTotalPlays": 5,
   "maxConcurrentViewers": 2,
   "maxVideoHeight": 720,
-  "maxVideoBitrate": 4000000
+  "maxVideoBitrate": 4000000,
+  "allowDownload": true
 }
 ```
+
+`expiresInMinutes` defaults to 30 days when omitted. `allowDownload` defaults to
+`true` when omitted, so a client that predates it keeps offering downloads;
+`JFSHARE_ALLOW_DOWNLOADS=false` overrides it for every share.
 
 #### List Shares
 ```http
@@ -217,6 +256,25 @@ GET /api/public/shares/{token}/episodes
 POST /api/public/shares/{token}/episodes/{episodeId}/play
 ```
 
+#### Download
+```http
+POST /api/public/shares/{token}/download
+POST /api/public/shares/{token}/episodes/{episodeId}/download
+POST /api/public/shares/{token}/episodes/download
+GET  /api/public/downloads/{ticket}
+```
+
+The POSTs - a film or episode share itself, one episode of a season or series,
+or every episode as one ZIP - check the share and its password, charge one play,
+and answer with a `downloadUrl`. That URL carries a signed ticket valid for two
+hours; the GET streams the original file with Range support, so an interrupted
+download resumes without being charged again. The ZIP is stored, not
+compressed, files episodes by season, and leaves out episodes the library lists
+without a file.
+
+Refused with 403 when the share's play limit is spent or downloads are off for
+it. A download takes no concurrent-viewer slot.
+
 #### Finish Playback
 ```http
 POST /api/public/sessions/{sessionId}/finish
@@ -257,6 +315,29 @@ docker-compose -f docker-compose.dev.yml up
 # Vite dev server runs on http://localhost:5173
 ```
 
+### Working on the interface
+
+[`design.md`](design.md) is the locked design system: palette, type, spacing,
+motion, component voice, and the reasoning behind each. Read it before changing
+the UI, and amend it rather than overriding it locally — a page that drifts from
+it is the thing the system exists to prevent.
+
+Two rules that are easy to break by accident:
+
+- **Every colour and font comes from `web/src/tokens.css`.** Components reference
+  tokens by name (`var(--color-accent)`); an inline hex or a bare `font-family`
+  is how a design system erodes. If a value does not exist yet, add it to
+  `tokens.css` first.
+- **Buttons filled with `--color-accent` keep their `outline-offset`.** The focus
+  ring only reaches 1.3:1 against the accent itself, so the offset is what puts it
+  on the page background where it reads at 9.1:1. Removing it makes the control
+  unusable by keyboard.
+
+The three faces (Instrument Serif, Geist, Geist Mono) load from Google Fonts. An
+instance with no outbound internet access falls back to the system stack — the
+layout holds, but the typography is not what was designed. Self-host the fonts if
+that matters to you.
+
 ### Project Structure
 
 ```
@@ -265,15 +346,18 @@ docker-compose -f docker-compose.dev.yml up
 ├── internal/
 │   ├── config/          # Configuration management
 │   ├── database/        # Database operations & migrations
+│   ├── download/        # Download tickets and file naming
 │   ├── handlers/        # HTTP handlers (admin & public)
 │   ├── jellyfin/        # Jellyfin API client
-│   ├── middleware/      # Auth, rate limiting, sessions
+│   ├── middleware/      # Auth, rate limiting, sessions, request logging
 │   ├── models/          # Data models
 │   └── proxy/           # Stream, image & subtitle proxy
 ├── migrations/          # SQL migrations
 ├── web/
 │   └── src/
+│       ├── tokens.css   # The design system's only source of colour/type/spacing
 │       └── components/  # Svelte components
+├── design.md            # Locked design system — read before touching the UI
 └── docker-compose.yml   # Production compose
 ```
 
@@ -297,13 +381,134 @@ cd web && npm run build
 - **Automatic session cleanup** - Stale sessions are automatically terminated
 - **Credentials stay server-side** - The Jellyfin key travels as a request header, never
   in a URL that could be echoed back into a manifest the viewer receives
+- **Downloads are ticketed** - The item a download serves is checked against the share
+  when it is requested and carried in an HMAC-signed ticket that expires after two
+  hours; the file request cannot be pointed anywhere else, and the ticket is masked
+  in the request log
 - **Playback is pinned to the session** - The item, media source, codec, bitrate and
   track selection are resolved once when playback starts. The proxy never takes them
   from a request, so a share link cannot be pointed at another item
 
 ## Companion Plugin
 
-For seamless integration, install the [Jellyfin Share Plugin](https://github.com/monxas/jellyfin-share-plugin) to create share links directly from the Jellyfin UI.
+For seamless integration, install the [Jellyfin Share Plugin](https://github.com/stanislavhannes/jellyfin-share-plugin) to create share links directly from the Jellyfin UI.
+
+## What this fork changes
+
+Relative to the upstream project. Every item was reproduced against a live
+Jellyfin before being fixed; the numbers below are measured.
+
+**Security**
+
+- The Jellyfin API key was readable by anyone holding a share link. Jellyfin
+  echoes a request's query parameters back into the HLS manifests it generates,
+  and the proxy forwarded those verbatim, so `api_key` appeared in the
+  `master.m3u8` a viewer receives. The key taken from a playlist returned every
+  account with `IsAdministrator: true`. Now header-only.
+- Any share link could stream any item in the library: `ServeStream` took the
+  item id from the viewer's query string. A share for one film returned another
+  film's segments, 570 KB of real video. The item — and the media source, codec,
+  bitrate and track selection — is now pinned to the session at play time.
+
+**Playback**
+
+- Quality collapsed to 416x234 on any transcode, because no target bitrate was
+  sent and Jellyfin falls back to 128 kbit/s. The target is now derived from the
+  source and scaled for the codec being encoded into.
+- AV1 and HEVC reached the browser undecodable — stream-copied into mpegts, which
+  produced a black picture with audio only. The codec is now negotiated with the
+  viewer's browser: a source the browser can decode is still copied, byte for
+  byte.
+- Text subtitles are delivered as a WebVTT sidecar instead of being burned in, so
+  the video needs no re-encode and the viewer can switch them off.
+- Audio and subtitle tracks are selectable, and a share can carry its own quality
+  ceiling.
+- **Casting to a TV.**
+  - **Google Cast** works in **Chrome and other Chromium browsers only** (Edge,
+    Brave, Opera). Cast is a Chrome technology and Google publishes no interface
+    for other browsers, so the Cast button is absent in Safari and Firefox by
+    design, not by omission.
+  - **AirPlay** covers Safari instead, through Safari's own button in the player
+    controls once playback has started and an AirPlay target is on the network.
+  - **Firefox** has no casting route at all.
+
+  A season or series share has no single Play button, so casting is connected
+  once from above the episode list; every episode picked afterwards starts on the
+  receiver, and switching episodes releases the previous session rather than
+  leaving it to occupy a concurrent-viewer slot.
+
+- **Autoplay through a season.** When an episode ends the next one starts by
+  itself — in the browser, on a Cast receiver, and over AirPlay, which mirrors the
+  same element the browser path uses.
+
+  An episode started this way does not count against the share's play limit. A
+  link offered as "three plays" is meant to be three viewings, not three episodes,
+  and would otherwise die mid-season. The continuation is bounded so that
+  exemption cannot become an unlimited link: it must follow a session of the same
+  share that was alive moments ago, and a chain may not run longer than the share
+  has episodes — one play buys at most one pass through the series.
+
+  Both need the page served over **HTTPS** — browsers dropped the Presentation API
+  on plain HTTP — and `JFSHARE_PUBLIC_BASE_URL` must be an address the receiving
+  device can reach, since it fetches the stream itself rather than relaying it
+  through the browser. The Cast button is hidden on an insecure origin, with one
+  exception: browsers treat `localhost` as secure, so it appears there and then
+  hands the receiver a `localhost` URL it cannot resolve.
+
+**Downloads, resume and the next episode**
+
+- **Downloads.** A film or an episode can be saved as the original file, and a
+  season or series as one ZIP filed by season. Each download costs one play, so a
+  limited link cannot be bypassed by saving the file; a whole-series ZIP costs one
+  as well. Whoever shares a link chooses whether it offers downloads (on by
+  default), and the server can switch them off for every link. A download is
+  always the original file: a share's quality cap applies to streaming only.
+- **Resume.** The page remembers, in the viewer's browser, where they stopped -
+  per film and per episode. It then offers *Resume* with the time beside *From the
+  start*; a series picks up on the episode last watched, or on the next one once
+  that was finished. Each episode row shows how much of it has been seen, and a
+  film or episode watched to the end is ticked. Nothing is stored server-side: a
+  link has no account behind it, and a forwarded link should not open on the
+  sender's position.
+- **Next episode.** In an episode's last 30 seconds a card in the bottom-right
+  corner names the next one. *Play now* starts it at once; left alone it starts
+  when the episode ends; *Cancel* or the close button returns to the episode list.
+  When a film or the last episode ends, the page returns to the share page and
+  leaves fullscreen.
+
+  The card stays visible in fullscreen: the video's own fullscreen control is
+  redirected to the whole page, since a fullscreen `<video>` element hides
+  everything the page draws over it, and fullscreen carries on from one episode
+  to the next. The player's separate fullscreen button was removed - it only
+  repeated the video's own.
+
+**Fixes**
+
+- Series shares listed seasons and could not play any of them.
+- Share analytics always returned 500 — the query named a table and a column that
+  do not exist.
+- `JFSHARE_PORT` was ignored by the healthcheck, leaving the container
+  permanently unhealthy.
+- Shares can be created without an expiry.
+
+**Interface**
+
+- The viewer page and the admin surface were redesigned around one system
+  ([`design.md`](design.md)). The palette is anchored on Jellyfin's own accent
+  `#00a4dc` so a share link reads as part of the server it came from; contrast
+  ratios are computed from the OKLCH values rather than eyeballed.
+- The share page leads with the artwork and states the link's terms in words —
+  how long it lasts, how many plays remain — instead of a row of badges.
+- The admin dashboard is an index rather than a table: it restacks on a phone
+  instead of scrolling sideways, and revoking asks in the row it affects rather
+  than through a browser `confirm()` that paints over the page.
+- Absolute timestamps render in the reader's own timezone, named — not as a bare
+  UTC string.
+- Every emitted page was rendered and measured at 320, 375, 414, 768 and 1280 px.
+
+**Compatibility**
+
+Works against Jellyfin 10.11 and 12.x with the same build.
 
 ## License
 

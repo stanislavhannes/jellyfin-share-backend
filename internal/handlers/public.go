@@ -16,24 +16,27 @@ import (
 	"github.com/google/uuid"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/config"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/database"
+	"github.com/jellyfin-share/jellyfin-share-backend/internal/download"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/jellyfin"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/middleware"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/models"
 )
 
 type PublicHandler struct {
-	db       *database.DB
-	jf       *jellyfin.Client
-	cfg      *config.Config
-	sessions *middleware.ShareSessionManager
+	db        *database.DB
+	jf        *jellyfin.Client
+	cfg       *config.Config
+	sessions  *middleware.ShareSessionManager
+	downloads *download.Signer
 }
 
-func NewPublicHandler(db *database.DB, jf *jellyfin.Client, cfg *config.Config, sessions *middleware.ShareSessionManager) *PublicHandler {
+func NewPublicHandler(db *database.DB, jf *jellyfin.Client, cfg *config.Config, sessions *middleware.ShareSessionManager, downloads *download.Signer) *PublicHandler {
 	return &PublicHandler{
-		db:       db,
-		jf:       jf,
-		cfg:      cfg,
-		sessions: sessions,
+		db:        db,
+		jf:        jf,
+		cfg:       cfg,
+		sessions:  sessions,
+		downloads: downloads,
 	}
 }
 
@@ -65,6 +68,7 @@ func (h *PublicHandler) GetShareInfo(w http.ResponseWriter, r *http.Request) {
 	h.db.LogAuditEvent(r.Context(), database.AuditEventShareAccessed, &share.ID, nil, nil, &ipHash, nil)
 
 	info := share.ToPublicInfo(h.cfg.PublicBaseURL)
+	info.AllowDownload = share.DownloadsAllowed(h.cfg.AllowDownloads)
 
 	// Fetch extended metadata from Jellyfin
 	item, err := h.jf.GetItem(r.Context(), share.JellyfinItemID)
@@ -73,7 +77,7 @@ func (h *PublicHandler) GetShareInfo(w http.ResponseWriter, r *http.Request) {
 	} else if item != nil {
 		h.enrichShareInfo(&info, item, token)
 	}
-	if item != nil || share.ItemType == "Series" || share.ItemType == "Season" {
+	if item != nil || share.HasEpisodes() {
 		info.AudioTracks, info.SubtitleTracks = h.tracksForItem(r.Context(), item, share.ItemType, share.JellyfinItemID)
 	}
 
@@ -578,28 +582,39 @@ func (h *PublicHandler) ValidatePassword(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "authenticated"})
 }
 
-func (h *PublicHandler) StartPlayback(w http.ResponseWriter, r *http.Request) {
+// publicShare loads the share a public request names and checks the viewer may
+// use it: it exists, is neither expired nor revoked, and its password - if it has
+// one - was entered. On failure it has written the response itself.
+func (h *PublicHandler) publicShare(w http.ResponseWriter, r *http.Request) (*models.Share, bool) {
 	token := chi.URLParam(r, "token")
 
 	share, err := h.db.GetShareByToken(r.Context(), token)
 	if err != nil || share == nil {
 		writeError(w, http.StatusNotFound, "share not found")
-		return
+		return nil, false
 	}
 
-	// Validate share state
 	if !share.IsValid() {
 		if share.IsExpired() {
 			writeError(w, http.StatusGone, "share has expired")
 		} else {
 			writeError(w, http.StatusGone, "share is no longer available")
 		}
-		return
+		return nil, false
 	}
 
-	// Check password if required
 	if share.RequiresPassword() && !h.sessions.GetSessionFromCookie(r, token) {
 		writeError(w, http.StatusUnauthorized, "password required")
+		return nil, false
+	}
+	return share, true
+}
+
+func (h *PublicHandler) StartPlayback(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+
+	share, ok := h.publicShare(w, r)
+	if !ok {
 		return
 	}
 
@@ -782,47 +797,34 @@ func (h *PublicHandler) FinishPlayback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "finished"})
 }
 
-// episodesForShare returns the episodes a share actually grants access to. A Season
-// share yields its own episodes; a Series share yields every episode of every season,
-// flattened, so the list is playable rather than a list of seasons that cannot be
-// started. This is the single source of truth for both listing and play validation.
+// episodesForShare returns the episodes a share actually grants access to: a
+// Season's own, or every episode of a Series flattened into one playable list.
+// Listing, playback and downloads all check against this.
 func (h *PublicHandler) episodesForShare(ctx context.Context, share *models.Share) ([]jellyfin.EpisodeInfo, error) {
-	switch share.ItemType {
-	case "Season":
-		return h.jf.GetSeasonEpisodes(ctx, share.JellyfinItemID)
-	case "Series":
-		// One recursive query rather than one per season: this runs on two
-		// unauthenticated endpoints, and a 20-season show would otherwise cost 21
-		// upstream calls per request.
-		return h.jf.GetSeriesEpisodes(ctx, share.JellyfinItemID)
-	default:
-		return nil, nil
+	return h.jf.GetEpisodesFor(ctx, share.ItemType, share.JellyfinItemID)
+}
+
+// containsEpisode is the check that keeps an episode request inside its share.
+func containsEpisode(episodes []jellyfin.EpisodeInfo, id string) bool {
+	for _, ep := range episodes {
+		if ep.ID == id {
+			return true
+		}
 	}
+	return false
 }
 
 // GetShareEpisodes returns episodes for a Season or Series share
 func (h *PublicHandler) GetShareEpisodes(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 
-	share, err := h.db.GetShareByToken(r.Context(), token)
-	if err != nil || share == nil {
-		writeError(w, http.StatusNotFound, "share not found")
-		return
-	}
-
-	if !share.IsValid() {
-		writeError(w, http.StatusGone, "share is no longer available")
-		return
-	}
-
-	// Check password if required
-	if share.RequiresPassword() && !h.sessions.GetSessionFromCookie(r, token) {
-		writeError(w, http.StatusUnauthorized, "password required")
+	share, ok := h.publicShare(w, r)
+	if !ok {
 		return
 	}
 
 	// Only Season and Series types have episodes/children
-	if share.ItemType != "Season" && share.ItemType != "Series" {
+	if !share.HasEpisodes() {
 		writeError(w, http.StatusBadRequest, "this share does not contain episodes")
 		return
 	}
@@ -856,30 +858,62 @@ func (h *PublicHandler) GetShareEpisodes(w http.ResponseWriter, r *http.Request)
 }
 
 // StartEpisodePlayback starts playback for a specific episode within a season share
+// continuationOf reads the ?continues=<sessionId> parameter, which autoplay sets
+// to the session whose episode just finished. It answers what depth the new
+// session carries and whether this is a continuation at all.
+//
+// This is not an authorisation check and must not be read as one: the session id
+// is already in the viewer's hands, since it addresses the stream they are
+// watching. What it does is bound what a continuation is worth, so that skipping
+// the play counter cannot be turned into an unlimited link:
+//
+//   - the session named must belong to this share, not another;
+//   - it must have been alive within the heartbeat timeout, because autoplay
+//     follows straight on. Someone returning an hour later starts a fresh play;
+//   - the chain may not outrun the episodes the share contains, so one play buys
+//     at most one pass through the series.
+//
+// Anything that fails returns (0, false), which costs a play rather than refusing
+// playback.
+func (h *PublicHandler) continuationOf(r *http.Request, share *models.Share, episodeCount int) (int, bool) {
+	raw := r.URL.Query().Get("continues")
+	if raw == "" {
+		return 0, false
+	}
+
+	previousID, err := uuid.Parse(raw)
+	if err != nil {
+		return 0, false
+	}
+
+	previous, err := h.db.GetSessionByID(r.Context(), previousID)
+	if err != nil || previous == nil || previous.ShareID != share.ID {
+		return 0, false
+	}
+
+	if time.Since(previous.LastHeartbeatAt) > h.cfg.SessionHeartbeatTimeout {
+		return 0, false
+	}
+
+	depth := previous.ContinuationDepth + 1
+	if depth >= episodeCount {
+		return 0, false
+	}
+
+	return depth, true
+}
+
 func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 	episodeID := chi.URLParam(r, "episodeId")
 
-	share, err := h.db.GetShareByToken(r.Context(), token)
-	if err != nil || share == nil {
-		writeError(w, http.StatusNotFound, "share not found")
-		return
-	}
-
-	// Validate share state
-	if !share.IsValid() {
-		writeError(w, http.StatusGone, "share is no longer available")
-		return
-	}
-
-	// Check password if required
-	if share.RequiresPassword() && !h.sessions.GetSessionFromCookie(r, token) {
-		writeError(w, http.StatusUnauthorized, "password required")
+	share, ok := h.publicShare(w, r)
+	if !ok {
 		return
 	}
 
 	// Only shares that contain episodes can play one
-	if share.ItemType != "Season" && share.ItemType != "Series" {
+	if !share.HasEpisodes() {
 		writeError(w, http.StatusBadRequest, "this share does not contain episodes")
 		return
 	}
@@ -892,15 +926,7 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	episodeValid := false
-	for _, ep := range episodes {
-		if ep.ID == episodeID {
-			episodeValid = true
-			break
-		}
-	}
-
-	if !episodeValid {
+	if !containsEpisode(episodes, episodeID) {
 		writeError(w, http.StatusForbidden, "episode not part of this share")
 		return
 	}
@@ -912,15 +938,24 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		share, _ = h.db.GetShareByToken(r.Context(), token)
 	}
 
+	// Autoplay hands back the session it is following on from. Such a request
+	// continues a viewing that was already charged, so it skips the play limit.
+	depth, continuing := h.continuationOf(r, share, len(episodes))
+
 	// Check limits
-	if !share.CanStartNewPlay() {
+	allowed := share.CanStartNewPlay()
+	if continuing {
+		allowed = share.CanContinuePlay()
+	}
+	if !allowed {
 		ipHash := middleware.GetIPHash(r.Context())
 		h.db.LogAuditEvent(r.Context(), database.AuditEventPlaybackDenied, &share.ID, nil, nil, &ipHash, map[string]interface{}{
 			"reason":    "limit_reached",
 			"episodeId": episodeID,
+			"continues": continuing,
 		})
 
-		if share.MaxTotalPlays.Valid && int64(share.TotalPlays) >= share.MaxTotalPlays.Int64 {
+		if !continuing && share.MaxTotalPlays.Valid && int64(share.TotalPlays) >= share.MaxTotalPlays.Int64 {
 			writeError(w, http.StatusForbidden, "maximum plays reached")
 		} else {
 			writeError(w, http.StatusForbidden, "maximum concurrent viewers reached")
@@ -939,6 +974,8 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		StartedAt:       time.Now(),
 		LastHeartbeatAt: time.Now(),
 		JellyfinItemID:  sql.NullString{String: episodeID, Valid: true},
+
+		ContinuationDepth: depth,
 	}
 
 	ipHash := middleware.GetIPHash(r.Context())
@@ -966,14 +1003,18 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Increment counters
-	if err := h.db.IncrementPlayCount(r.Context(), share.ID); err != nil {
-		log.Printf("Failed to increment play count: %v", err)
+	// Increment counters. A continuation is deliberately not counted; see
+	// continuationOf for what stops that from being a way round the limit.
+	if !continuing {
+		if err := h.db.IncrementPlayCount(r.Context(), share.ID); err != nil {
+			log.Printf("Failed to increment play count: %v", err)
+		}
 	}
 
 	// Log audit event
 	h.db.LogAuditEvent(r.Context(), database.AuditEventPlaybackStarted, &share.ID, &session.ID, nil, &ipHash, map[string]interface{}{
 		"episodeId": episodeID,
+		"continues": continuing,
 	})
 
 	// Generate playback URL for the specific episode

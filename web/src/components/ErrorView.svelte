@@ -1,81 +1,143 @@
 <script>
   export let error;
 
+  // Errors name what broke, then what to do about it. No apology, no emoji —
+  // the status code carries the diagnosis for anyone who needs it.
   const errorMessages = {
     404: {
-      title: 'Not Found',
-      icon: '🔍',
-      description: 'This share link doesn\'t exist or may have been removed.'
+      title: 'Not found',
+      description: 'This link doesn’t point at anything. It was either never created, or it has been deleted since.',
+      action: 'Ask whoever sent it for a fresh link.'
     },
     410: {
-      title: 'No Longer Available',
-      icon: '⏰',
-      description: 'This share has expired or been revoked.'
+      title: 'No longer available',
+      description: 'The link has run out — it expired, hit its play limit, or the owner revoked it.',
+      action: 'Ask whoever sent it for a fresh link.'
     },
     403: {
-      title: 'Access Denied',
-      icon: '🚫',
-      description: 'You don\'t have permission to view this content.'
+      title: 'Access denied',
+      description: 'This link exists, but it doesn’t grant access to that content.',
+      action: 'Check you opened the full link, including everything after the last slash.'
     },
     default: {
-      title: 'Something Went Wrong',
-      icon: '❌',
-      description: 'An error occurred while loading this share.'
+      title: 'Couldn’t load the share',
+      description: 'The server answered, but not with a share.',
+      action: 'Reload the page. If it keeps failing, the backend may be down.'
     }
   };
 
   $: errorInfo = errorMessages[error?.status] || errorMessages.default;
+  $: detail = error?.message && error.message !== errorInfo.description ? error.message : '';
 </script>
 
-<div class="error-container">
-  <div class="error-card">
-    <div class="error-icon">{errorInfo.icon}</div>
-    <h1>{errorInfo.title}</h1>
-    <p class="description">{errorInfo.description}</p>
-    {#if error?.message && error.message !== errorInfo.description}
-      <p class="detail">{error.message}</p>
+<div class="error bloom-ground">
+  <header class="nav">
+    <span class="wordmark">Jellyfin Share</span>
+    <span class="nav__status">{error?.status || '—'}</span>
+  </header>
+
+  <div class="error__body">
+    <h1 class="error__title">{errorInfo.title}</h1>
+    <p class="error__lede">{errorInfo.description}</p>
+    <p class="error__action">{errorInfo.action}</p>
+
+    {#if detail}
+      <p class="error__detail">{detail}</p>
     {/if}
   </div>
+
+  <footer class="foot">
+    <p>Shared via <a class="foot-link" href="https://github.com/stanislavhannes/jellyfin-share-backend" target="_blank" rel="noopener noreferrer">Jellyfin Share</a> · nothing was sent to the server</p>
+  </footer>
 </div>
 
 <style>
-  .error-container {
+  /* Hallmark · genre: atmospheric · macrostructure: 08 Photographic (bare fold)
+   * nav: N9 edge-aligned · footer: Ft2 inline single line
+   * design-system: design.md · designed-as-app
+   */
+  /* No card, no centred column, no icon. The statement sits low-left against a
+     single warm bloom; the emptiness above it is the design. */
+  .error {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    min-height: 100dvh;
+    padding-inline: var(--page-gutter);
+  }
+
+  .error > * { position: relative; z-index: var(--z-base); }
+
+  /* N9 · Edge-aligned minimal — wordmark hard-left, status hard-right, nothing between. */
+  .nav {
     display: flex;
-    justify-content: center;
     align-items: center;
-    min-height: 100vh;
-    padding: 1rem;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding-block: var(--space-lg);
   }
 
-  .error-card {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 16px;
-    padding: 3rem;
-    text-align: center;
-    max-width: 400px;
+  .wordmark {
+    font-family: var(--font-display);
+    font-size: var(--text-md);
+    letter-spacing: -0.01em;
+    color: var(--color-ink-2);
+    white-space: nowrap;
   }
 
-  .error-icon {
-    font-size: 4rem;
-    margin-bottom: 1rem;
+  .nav__status {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.08em;
+    color: var(--color-muted);
+    white-space: nowrap;
   }
 
-  h1 {
-    font-size: 1.5rem;
-    margin-bottom: 0.5rem;
-    color: #fff;
+  .error__body {
+    align-self: end;
+    max-width: var(--measure);
+    padding-block: var(--space-2xl) var(--space-3xl);
   }
 
-  .description {
-    color: #a0a0a0;
-    margin-bottom: 1rem;
+  .error__title {
+    font-size: var(--text-display);
+    overflow-wrap: anywhere;
+    min-width: 0;
+    margin-bottom: var(--space-lg);
   }
 
-  .detail {
-    color: #888;
-    font-size: 0.875rem;
-    padding-top: 1rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
+  .error__lede {
+    font-size: var(--text-md);
+    line-height: 1.55;
+    color: var(--color-ink-2);
+    margin-bottom: var(--space-sm);
+  }
+
+  .error__action {
+    color: var(--color-muted);
+  }
+
+  .error__detail {
+    margin-top: var(--space-xl);
+    padding-top: var(--space-md);
+    border-top: var(--rule-hair) solid var(--color-rule-2);
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    color: var(--color-muted);
+    overflow-wrap: anywhere;
+  }
+
+  /* Ft2 · Inline single line */
+  .foot {
+    padding-block: var(--space-md) var(--space-lg);
+    padding-bottom: max(var(--space-lg), env(safe-area-inset-bottom));
+    border-top: var(--rule-hair) solid var(--color-rule-2);
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    color: var(--color-neutral);
+  }
+
+  @media (min-width: 60rem) {
+    .error__body { padding-block: var(--space-3xl) var(--space-4xl); }
   }
 </style>

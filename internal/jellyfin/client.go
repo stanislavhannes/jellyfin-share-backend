@@ -106,6 +106,9 @@ type MediaSource struct {
 	ID                   string         `json:"Id"`
 	Name                 string         `json:"Name,omitempty"`
 	Container            string         `json:"Container,omitempty"`
+	// Path is the file on the Jellyfin host. Only its extension is ever used - it
+	// names a download - and the path itself never leaves the backend.
+	Path                 string         `json:"Path,omitempty"`
 	Size                 int64          `json:"Size,omitempty"`
 	Bitrate              int            `json:"Bitrate,omitempty"`
 	SupportsDirectPlay   bool           `json:"SupportsDirectPlay"`
@@ -156,22 +159,12 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	c.AuthorizeRequest(req)
+	req.Header.Set("Authorization", c.AuthHeader())
 	req.Header.Set("Content-Type", "application/json")
 
 	return c.httpClient.Do(req)
 }
 
-// AuthorizeRequest attaches the Jellyfin credential as a header. Callers that build
-// their own request must use this instead of putting api_key in the query string:
-// Jellyfin echoes a request's query params back inside generated HLS manifests, and
-// the stream proxy forwards those manifests verbatim to untrusted share viewers.
-func (c *Client) AuthorizeRequest(req *http.Request) {
-	// Jellyfin 12 dropped the X-Emby-Token header and the api_key query parameter;
-	// only this form is still accepted. Jellyfin 10.11 accepts it too, so one
-	// header covers both.
-	req.Header.Set("Authorization", fmt.Sprintf("MediaBrowser Token=%q", c.apiKey))
-}
 
 func (c *Client) GetItem(ctx context.Context, itemID string) (*ItemInfo, error) {
 	if c.userID == "" {
@@ -227,6 +220,16 @@ func (c *Client) GetSubtitleURL(itemID, mediaSourceID string, index int) string 
 	return fmt.Sprintf("%s/Videos/%s/%s/Subtitles/%d/Stream.vtt", c.baseURL, itemID, mediaSourceID, index)
 }
 
+// GetOriginalFileURL returns the untouched source file of a media source. Static
+// means Jellyfin serves the file as it is on disk, with Range support, rather than
+// starting a transcode.
+func (c *Client) GetOriginalFileURL(itemID, mediaSourceID string) string {
+	if mediaSourceID == "" {
+		mediaSourceID = itemID
+	}
+	return fmt.Sprintf("%s/Videos/%s/stream?static=true&mediaSourceId=%s", c.baseURL, itemID, mediaSourceID)
+}
+
 func (c *Client) GetPosterURL(itemID string) string {
 	return fmt.Sprintf("%s/Items/%s/Images/Primary", c.baseURL, itemID)
 }
@@ -257,6 +260,12 @@ func (c *Client) VerifyConnection(ctx context.Context) error {
 	return nil
 }
 
+// AuthHeader returns the standard MediaBrowser Authorization header value.
+// Jellyfin 10.11 removed legacy auth (X-Emby-Token header, api_key query param).
+func (c *Client) AuthHeader() string {
+	return `MediaBrowser Client="jellyfin-share", Device="jfshare-backend", DeviceId="jfshare-backend", Version="1.0", Token="` + c.apiKey + `"`
+}
+
 func (c *Client) BaseURL() string {
 	return c.baseURL
 }
@@ -280,16 +289,54 @@ type EpisodeInfo struct {
 	SeasonNumber      int    `json:"seasonNumber,omitempty"`
 }
 
-// GetSeriesEpisodes returns every episode of a series in one request, ordered by
-// season then episode, instead of walking the seasons one call at a time.
-func (c *Client) GetSeriesEpisodes(ctx context.Context, seriesID string) ([]EpisodeInfo, error) {
+// GetEpisodesFor returns the episodes a Season or Series item contains, in
+// running order. Any other item type has none.
+func (c *Client) GetEpisodesFor(ctx context.Context, itemType, itemID string) ([]EpisodeInfo, error) {
+	items, err := c.episodeItems(ctx, itemType, itemID, "")
+	if err != nil {
+		return nil, err
+	}
+	episodes := make([]EpisodeInfo, 0, len(items))
+	for _, item := range items {
+		episodes = append(episodes, EpisodeInfo{
+			ID:             item.ID,
+			Name:           item.Name,
+			IndexNumber:    item.IndexNumber,
+			SeasonNumber:   item.ParentIndexNumber,
+			Overview:       item.Overview,
+			RuntimeSeconds: TicksToSeconds(item.RunTimeTicks),
+			HasPoster:      item.ImageTags.Primary != "",
+			PremiereDate:   item.PremiereDate,
+		})
+	}
+	return episodes, nil
+}
+
+// GetEpisodeFilesFor is GetEpisodesFor with each episode's media sources, so
+// the files can be fetched without a lookup per episode. It is the same query,
+// so a ZIP holds exactly the episodes the page lists.
+func (c *Client) GetEpisodeFilesFor(ctx context.Context, itemType, itemID string) ([]ItemInfo, error) {
+	return c.episodeItems(ctx, itemType, itemID, "MediaSources,Path")
+}
+
+// episodeItems is the one episode query: every episode below a Season or
+// Series, ordered by season then episode. A single recursive request rather
+// than one per season - this runs on unauthenticated endpoints, and a 20-season
+// show would otherwise cost 21 upstream calls.
+func (c *Client) episodeItems(ctx context.Context, itemType, itemID, fields string) ([]ItemInfo, error) {
+	if itemType != "Season" && itemType != "Series" {
+		return nil, nil
+	}
 	if c.userID == "" {
 		return nil, fmt.Errorf("user ID not set - call FetchAndSetUserID first")
 	}
 
 	path := fmt.Sprintf(
 		"/Users/%s/Items?ParentId=%s&Recursive=true&IncludeItemTypes=Episode&SortBy=ParentIndexNumber,IndexNumber&SortOrder=Ascending",
-		c.userID, seriesID)
+		c.userID, itemID)
+	if fields != "" {
+		path += "&Fields=" + fields
+	}
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
@@ -307,21 +354,7 @@ func (c *Client) GetSeriesEpisodes(ctx context.Context, seriesID string) ([]Epis
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode episodes: %w", err)
 	}
-
-	episodes := make([]EpisodeInfo, 0, len(result.Items))
-	for _, item := range result.Items {
-		episodes = append(episodes, EpisodeInfo{
-			ID:             item.ID,
-			Name:           item.Name,
-			IndexNumber:    item.IndexNumber,
-			SeasonNumber:   item.ParentIndexNumber,
-			Overview:       item.Overview,
-			RuntimeSeconds: item.RunTimeTicks / 10000000,
-			HasPoster:      item.ImageTags.Primary != "",
-			PremiereDate:   item.PremiereDate,
-		})
-	}
-	return episodes, nil
+	return result.Items, nil
 }
 
 // GetSeasonEpisodes returns all episodes in a season
