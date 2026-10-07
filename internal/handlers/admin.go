@@ -45,7 +45,7 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.ExpiresInMinutes <= 0 {
-		req.ExpiresInMinutes = 1440 // Default 24 hours
+		req.ExpiresInMinutes = 30 * 1440 // Default 30 days, the same as the plugin's
 	}
 
 	// NeverExpires stores a NULL expiry; ExpiresInMinutes is ignored in that case.
