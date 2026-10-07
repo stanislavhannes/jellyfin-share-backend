@@ -318,13 +318,13 @@
   // itself fullscreen, so that is caught here and handed up. The click's
   // activation is still live when this event arrives, which is what allows the
   // new request; a browser that refuses it leaves fullscreen instead.
-  const page = () => document.documentElement;
+  const page = document.documentElement;
   // Read, not assumed: after autoplay this instance starts inside a page that
   // is already fullscreen, and no fullscreenchange will say so.
-  let pageFullscreen = document.fullscreenElement === document.documentElement;
+  let pageFullscreen = document.fullscreenElement === page;
 
   async function handleFullscreenChange() {
-    if (document.fullscreenElement === videoElement && page().requestFullscreen) {
+    if (document.fullscreenElement === videoElement && page.requestFullscreen) {
       // Already fullscreen through the page, the control means "leave".
       const leaving = pageFullscreen;
       try {
@@ -332,20 +332,20 @@
         if (leaving) {
           if (document.fullscreenElement) await document.exitFullscreen();
         } else {
-          await page().requestFullscreen();
+          await page.requestFullscreen();
         }
       } catch (e) {
         // Refused: nothing left to do but stay out of fullscreen.
       }
     }
-    pageFullscreen = document.fullscreenElement === page();
+    pageFullscreen = document.fullscreenElement === page;
   }
 
   function toggleFullscreen() {
     if (document.fullscreenElement) {
       document.exitFullscreen();
     } else {
-      page().requestFullscreen?.();
+      page.requestFullscreen?.();
     }
   }
 

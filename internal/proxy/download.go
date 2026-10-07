@@ -94,15 +94,9 @@ func (p *StreamProxy) serveEpisodesZip(w http.ResponseWriter, r *http.Request, s
 		http.Error(w, "episodes not available", http.StatusBadGateway)
 		return
 	}
-	// A library that shows missing episodes lists them with no file behind
-	// them. They are left out up front, while an error can still be sent: a
-	// season of nothing but missing episodes must not become an empty archive.
-	episodes := listed[:0]
-	for _, ep := range listed {
-		if len(ep.MediaSources) > 0 {
-			episodes = append(episodes, ep)
-		}
-	}
+	// Left out up front, while an error can still be sent: a season of nothing
+	// but missing episodes must not become an empty archive.
+	episodes := withFiles(listed)
 	if len(episodes) == 0 {
 		log.Printf("ZIP download of %s: none of its %d episodes has a file", itemID, len(listed))
 		http.Error(w, "episodes not available", http.StatusBadGateway)
@@ -136,6 +130,18 @@ func (p *StreamProxy) serveEpisodesZip(w http.ResponseWriter, r *http.Request, s
 	if err := zw.Close(); err != nil {
 		log.Printf("Failed to finish ZIP download of %s: %v", itemID, err)
 	}
+}
+
+// withFiles drops the episodes that have no file behind them, which is how a
+// library that shows missing episodes lists those.
+func withFiles(episodes []jellyfin.ItemInfo) []jellyfin.ItemInfo {
+	kept := make([]jellyfin.ItemInfo, 0, len(episodes))
+	for _, ep := range episodes {
+		if len(ep.MediaSources) > 0 {
+			kept = append(kept, ep)
+		}
+	}
+	return kept
 }
 
 func (p *StreamProxy) addEpisode(ctx context.Context, zw *zip.Writer, folder string, bySeason bool, item *jellyfin.ItemInfo) error {

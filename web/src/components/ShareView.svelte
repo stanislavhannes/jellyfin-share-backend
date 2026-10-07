@@ -1517,7 +1517,6 @@
   /* Watched: the tick takes the accent, the one mark in the row that is about
      the viewer rather than the file. */
   .ep__watched { display: inline-flex; color: var(--color-accent); }
-  .ep__end .ep__watched :global(svg) { color: var(--color-accent); }
 
   .watched {
     display: inline-flex;
