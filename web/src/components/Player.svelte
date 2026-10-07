@@ -377,7 +377,12 @@
   }
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<!-- Reloading or closing the tab tears nothing down, so the regular report
+     never runs; pagehide is the last moment the page is still there to save the
+     exact position. A tab sent to the background on a phone may never come
+     back, which is what the visibility change covers. -->
+<svelte:window on:keydown={handleKeydown} on:pagehide={reportProgress} />
+<svelte:document on:visibilitychange={() => document.visibilityState === 'hidden' && reportProgress()} />
 
 <div class="player">
   <!-- The video is the page. Chrome floats over it and gets out of the way.
