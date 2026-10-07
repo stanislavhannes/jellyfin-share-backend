@@ -470,9 +470,11 @@ Jellyfin before being fixed; the numbers below are measured.
 - **Next episode.** In an episode's last 30 seconds a card in the bottom-right
   corner names the next one. *Play now* starts it at once; left alone it starts
   when the episode ends; *Cancel* or the close button returns to the episode list.
-  The card stays visible in fullscreen: the video's own fullscreen control is
-  redirected to the player, since a fullscreen `<video>` element hides everything
-  the page draws over it. The player's separate fullscreen button was removed - it
+  When a film or the last episode ends, the page returns to the share page and
+  leaves fullscreen. The card stays visible in fullscreen: the video's own
+  fullscreen control is redirected to the whole page, since a fullscreen
+  `<video>` element hides everything the page draws over it, and fullscreen
+  carries on from one episode to the next. The player's separate fullscreen button was removed - it
   only repeated the video's own.
 
 **Fixes**
