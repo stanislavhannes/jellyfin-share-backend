@@ -20,6 +20,7 @@ const (
 	AuditEventPlaybackEnded    AuditEventType = "playback_ended"
 	AuditEventPlaybackDenied   AuditEventType = "playback_denied"
 	AuditEventSessionTimeout   AuditEventType = "session_timeout"
+	AuditEventDownloadStarted  AuditEventType = "download_started"
 )
 
 type AuditLog struct {

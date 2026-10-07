@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/config"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/database"
+	"github.com/jellyfin-share/jellyfin-share-backend/internal/download"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/jellyfin"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/models"
 )
@@ -21,14 +22,16 @@ type StreamProxy struct {
 	db         *database.DB
 	jf         *jellyfin.Client
 	cfg        *config.Config
+	downloads  *download.Signer
 	httpClient *http.Client
 }
 
-func NewStreamProxy(db *database.DB, jf *jellyfin.Client, cfg *config.Config) *StreamProxy {
+func NewStreamProxy(db *database.DB, jf *jellyfin.Client, cfg *config.Config, downloads *download.Signer) *StreamProxy {
 	return &StreamProxy{
-		db:  db,
-		jf:  jf,
-		cfg: cfg,
+		db:        db,
+		jf:        jf,
+		cfg:       cfg,
+		downloads: downloads,
 		httpClient: &http.Client{
 			Timeout: 0, // No timeout for streaming
 			Transport: &http.Transport{

@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/httprate"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/config"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/database"
+	"github.com/jellyfin-share/jellyfin-share-backend/internal/download"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/handlers"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/jellyfin"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/middleware"
@@ -63,14 +64,15 @@ func main() {
 
 	// Initialize handlers
 	adminHandler := handlers.NewAdminHandler(db, jf, cfg, sessionManager)
-	publicHandler := handlers.NewPublicHandler(db, jf, cfg, sessionManager)
-	streamProxy := proxy.NewStreamProxy(db, jf, cfg)
+	downloadSigner := download.NewSigner(cfg.BackendAPIKey)
+	publicHandler := handlers.NewPublicHandler(db, jf, cfg, sessionManager, downloadSigner)
+	streamProxy := proxy.NewStreamProxy(db, jf, cfg, downloadSigner)
 
 	// Create router
 	r := chi.NewRouter()
 
 	// Global middleware
-	r.Use(chimiddleware.Logger)
+	r.Use(middleware.Logger) // chi's logger, with download tickets masked
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RealIP)
 	r.Use(middleware.ClientIPMiddleware)
@@ -110,6 +112,9 @@ func main() {
 		r.Post("/shares/{token}/play", publicHandler.StartPlayback)
 		r.Get("/shares/{token}/episodes", publicHandler.GetShareEpisodes)
 		r.Post("/shares/{token}/episodes/{episodeId}/play", publicHandler.StartEpisodePlayback)
+		r.Post("/shares/{token}/download", publicHandler.RequestDownload)
+		r.Post("/shares/{token}/episodes/download", publicHandler.RequestAllEpisodesDownload)
+		r.Post("/shares/{token}/episodes/{episodeId}/download", publicHandler.RequestEpisodeDownload)
 		r.Post("/sessions/{sessionId}/heartbeat", publicHandler.Heartbeat)
 		r.Post("/sessions/{sessionId}/finish", publicHandler.FinishPlayback)
 
@@ -118,6 +123,9 @@ func main() {
 
 		// WebVTT sidecar for text subtitles
 		r.Get("/subtitles/{sessionId}/{index}", streamProxy.ServeSubtitle)
+
+		// The file itself, authorised by the ticket the POSTs above hand out
+		r.Get("/downloads/{ticket}", streamProxy.ServeDownload)
 
 		// Stream proxy (no rate limit for streaming)
 		r.Get("/stream/{sessionId}/*", streamProxy.ServeStream)

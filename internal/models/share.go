@@ -57,6 +57,9 @@ type Share struct {
 	// source decides, which is the default.
 	MaxVideoHeight           sql.NullInt64  `db:"max_video_height" json:"maxVideoHeight,omitempty"`
 	MaxVideoBitrate          sql.NullInt64  `db:"max_video_bitrate" json:"maxVideoBitrate,omitempty"`
+	// AllowDownload is the sharer's choice for this link; the server-wide setting
+	// can still switch downloads off for every link.
+	AllowDownload            bool           `db:"allow_download" json:"allowDownload"`
 	RevokedAt                sql.NullTime   `db:"revoked_at" json:"revokedAt,omitempty"`
 	LastActivityAt           sql.NullTime   `db:"last_activity_at" json:"lastActivityAt,omitempty"`
 }
@@ -91,10 +94,23 @@ func (s *Share) RequiresPassword() bool {
 }
 
 func (s *Share) CanStartNewPlay() bool {
-	if s.MaxTotalPlays.Valid && int64(s.TotalPlays) >= s.MaxTotalPlays.Int64 {
-		return false
-	}
-	return s.CanContinuePlay()
+	return !s.PlayLimitReached() && s.CanContinuePlay()
+}
+
+// PlayLimitReached reports whether the share's total-play budget is spent.
+func (s *Share) PlayLimitReached() bool {
+	return s.MaxTotalPlays.Valid && int64(s.TotalPlays) >= s.MaxTotalPlays.Int64
+}
+
+// DownloadsAllowed combines the sharer's choice with the server-wide switch.
+func (s *Share) DownloadsAllowed(serverAllows bool) bool {
+	return serverAllows && s.AllowDownload
+}
+
+// HasEpisodes reports whether the share is a season or series, whose episodes
+// are played and downloaded one by one.
+func (s *Share) HasEpisodes() bool {
+	return s.ItemType == "Season" || s.ItemType == "Series"
 }
 
 // CanContinuePlay is CanStartNewPlay without the total-play limit. An episode
@@ -125,6 +141,9 @@ type CreateShareRequest struct {
 	MaxVideoHeight       *int    `json:"maxVideoHeight,omitempty"`
 	MaxVideoBitrate      *int    `json:"maxVideoBitrate,omitempty"`
 	Password             *string `json:"password,omitempty"`
+	// AllowDownload is a pointer so an older client that does not send it gets
+	// the default - downloads on - rather than false.
+	AllowDownload        *bool   `json:"allowDownload,omitempty"`
 }
 
 type CreateShareResponse struct {
@@ -172,6 +191,8 @@ type SharePublicInfo struct {
 	TotalPlays               int       `json:"totalPlays"`
 	MaxConcurrentViewers     *int64    `json:"maxConcurrentViewers,omitempty"`
 	CurrentConcurrentViewers int       `json:"currentConcurrentViewers"`
+	// AllowDownload tells the page whether to offer downloads at all.
+	AllowDownload            bool      `json:"allowDownload"`
 
 	// Extended metadata (fetched live from Jellyfin)
 	Year            int               `json:"year,omitempty"`
@@ -185,6 +206,13 @@ type SharePublicInfo struct {
 	VideoQuality    *VideoQualityInfo `json:"videoQuality,omitempty"`
 	AudioTracks     []AudioTrack      `json:"audioTracks,omitempty"`
 	SubtitleTracks  []SubtitleTrack   `json:"subtitleTracks,omitempty"`
+}
+
+// DownloadResponse carries the URL the browser fetches the file from. It is
+// relative for the same reason the subtitle URL is: the page may have been
+// reached on another hostname than PublicBaseURL.
+type DownloadResponse struct {
+	DownloadURL string `json:"downloadUrl"`
 }
 
 type ActorInfo struct {
@@ -248,6 +276,7 @@ type ShareListItem struct {
 	RevokedAt                *time.Time `db:"revoked_at" json:"revokedAt,omitempty"`
 	MaxVideoHeight           *int64     `json:"maxVideoHeight,omitempty"`
 	HasPassword              bool       `json:"hasPassword"`
+	AllowDownload            bool       `json:"allowDownload"`
 	// PublicURL is built from PublicBaseURL, not from the caller's view of the
 	// backend, so clients never have to reconstruct it from their own base URL.
 	PublicURL string `json:"publicUrl"`
