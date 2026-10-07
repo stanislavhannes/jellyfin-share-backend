@@ -4,11 +4,12 @@
   import CastIcon from './CastIcon.svelte';
   import PlayIcon from './PlayIcon.svelte';
   import DownloadIcon from './DownloadIcon.svelte';
+  import CheckIcon from './CheckIcon.svelte';
   import { initCast, ensureCastSession, loadOnCast, stopCast, describeCastError, onCastEnded,
            toBcp47, subtitlesDropped, castApiReady, castAvailable, castConnected,
            castDeviceName } from '../cast.js';
   import { MAIN, loadProgress, saveProgress, resumePosition, seriesResumeTarget,
-           watchedFraction, formatClock } from '../progress.js';
+           watchedFraction, isWatched, formatClock } from '../progress.js';
 
   export let shareInfo;
   export let token;
@@ -42,6 +43,7 @@
   }
 
   $: movieResumeAt = resumePosition(progress.items[MAIN]);
+  $: movieWatched = isWatched(progress.items[MAIN]);
   $: seriesResume = seriesResumeTarget(progress, episodes);
 
   // The episode after the one playing, for the card near its end.
@@ -824,6 +826,9 @@
                       </span>
                       <span class="ep__name">{episode.name}</span>
                       <span class="ep__end" class:ep__end--cast={$castConnected}>
+                        {#if seen >= 1}
+                          <span class="ep__watched"><CheckIcon title="Watched" /></span>
+                        {/if}
                         {#if episode.runtimeSeconds}
                           <span class="ep__len">{formatDuration(episode.runtimeSeconds)}</span>
                         {/if}
@@ -908,6 +913,10 @@
               {/if}
             {/if}
           </div>
+
+          {#if movieWatched}
+            <p class="watched"><CheckIcon /> <span>Watched</span></p>
+          {/if}
 
           {#if shareInfo.maxTotalPlays}
             <!-- The play budget as a line under the button, not a widget. -->
@@ -1497,6 +1506,21 @@
   .ep__seen--done { background: var(--color-accent-dim); }
 
   .meter--dot { width: 1rem; }
+
+  /* Watched: the tick takes the accent, the one mark in the row that is about
+     the viewer rather than the file. */
+  .ep__watched { display: inline-flex; color: var(--color-accent); }
+  .ep__end .ep__watched :global(svg) { color: var(--color-accent); }
+
+  .watched {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font-size: var(--text-sm);
+    color: var(--color-muted);
+  }
+
+  .watched :global(svg) { width: 1rem; height: 1rem; color: var(--color-accent); }
 
   .ep__len {
     font-family: var(--font-outlier);

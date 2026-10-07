@@ -47,7 +47,7 @@ export function saveProgress(token, current, itemKey, position, duration) {
   return record;
 }
 
-function isWatched(entry) {
+export function isWatched(entry) {
   return !!entry && entry.duration > 0 && entry.position / entry.duration >= WATCHED_RATIO;
 }
 

@@ -463,7 +463,8 @@ Jellyfin before being fixed; the numbers below are measured.
 - **Resume.** The page remembers, in the viewer's browser, where they stopped -
   per film and per episode. It then offers *Resume* with the time beside *From the
   start*; a series picks up on the episode last watched, or on the next one once
-  that was finished. Each episode row shows how much of it has been seen. Nothing
+  that was finished. Each episode row shows how much of it has been seen, and
+  a film or episode watched to the end is ticked. Nothing
   is stored server-side: a link has no account behind it, and a forwarded link
   should not open on the sender's position.
 - **Next episode.** In an episode's last 30 seconds a card in the bottom-right
