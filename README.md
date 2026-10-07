@@ -458,7 +458,8 @@ Jellyfin before being fixed; the numbers below are measured.
   season or series as one ZIP filed by season. Each download costs one play, so a
   limited link cannot be bypassed by saving the file; a whole-series ZIP costs one
   as well. Whoever shares a link chooses whether it offers downloads (on by
-  default), and the server can switch them off for every link.
+  default), and the server can switch them off for every link. A download is
+  always the original file: a share's quality cap applies to streaming only.
 - **Resume.** The page remembers, in the viewer's browser, where they stopped -
   per film and per episode. It then offers *Resume* with the time beside *From the
   start*; a series picks up on the episode last watched, or on the next one once
