@@ -46,6 +46,9 @@
   onMount(() => {
     initPlayer();
     startHeartbeat();
+    // After autoplay this player starts inside a fullscreen page with the
+    // pointer at rest; the bar should still fade out on its own.
+    wake();
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
     // An iPhone's native video fullscreen is not document fullscreen; the video
@@ -331,7 +334,12 @@
   // control be hidden (controlsList), this player's button takes its place;
   // elsewhere - Safari, Firefox, the iPhone - the native one stays, and the
   // video goes fullscreen on its own.
-  const ownFullscreenControl = 'controlsList' in HTMLMediaElement.prototype;
+  //
+  // Not on a touch screen, though: there the native fullscreen also turns a
+  // phone to landscape, which a fullscreen page does not, and double-tapping
+  // the video is how the native controls skip. A phone keeps its own control.
+  const ownFullscreenControl = 'controlsList' in HTMLMediaElement.prototype
+    && !matchMedia('(pointer: coarse)').matches;
   // Read, not assumed: after autoplay this instance starts inside a page that
   // is already fullscreen, and no fullscreenchange will say so.
   let isFullscreen = !!fullscreenElement();
@@ -345,10 +353,20 @@
 
   function handleFullscreenChange() {
     isFullscreen = !!fullscreenElement();
+    // Start the countdown to hiding the bar now, not at the next mouse move -
+    // F does not move the mouse.
+    if (isFullscreen) wake();
   }
 
-  function handleDoubleClick() {
-    if (ownFullscreenControl) toggleFullscreen();
+  // The bottom strip of the video is its own control bar, whose clicks reach
+  // the video too: two quick clicks on play or the seek bar are not a request
+  // for fullscreen.
+  const CONTROL_BAR_HEIGHT = 48;
+
+  function handleDoubleClick(event) {
+    if (!ownFullscreenControl) return;
+    if (event.offsetY > videoElement.clientHeight - CONTROL_BAR_HEIGHT) return;
+    toggleFullscreen();
   }
 
   // In fullscreen the title bar steps aside once the pointer rests, the way
@@ -390,6 +408,7 @@
         }
         break;
       case 'f':
+      case 'F':
         toggleFullscreen();
         break;
       case 'ArrowLeft':
@@ -542,6 +561,17 @@
 
   :global(:root:fullscreen) .player--idle .player__bar,
   :global(:root:fullscreen) .player--idle .player__bar > * {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Safari before 16.4 only knows the prefixed pseudo-class. Kept in rules of
+     its own: a browser that does not know a selector drops the whole rule it
+     sits in, and Firefox would lose the one above. */
+  :global(:root:-webkit-full-screen) .player--idle { cursor: none; }
+
+  :global(:root:-webkit-full-screen) .player--idle .player__bar,
+  :global(:root:-webkit-full-screen) .player--idle .player__bar > * {
     opacity: 0;
     pointer-events: none;
   }

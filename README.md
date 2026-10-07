@@ -476,13 +476,16 @@ Jellyfin before being fixed; the numbers below are measured.
   When a film or the last episode ends, the page returns to the share page and
   leaves fullscreen.
 
-  The card stays visible in fullscreen because fullscreen goes to the whole
-  page - a fullscreen `<video>` element hides everything the page draws over it -
-  and it carries on from one episode to the next. That takes the player's own
-  fullscreen button: in Chrome, Edge and other Chromium browsers it replaces the
-  video's, which would only fullscreen the video. Safari, Firefox and the iPhone
-  keep their native control; the card is then not visible in fullscreen, and
-  autoplay still moves on to the next episode.
+  On a desktop the card stays visible in fullscreen because fullscreen goes to
+  the whole page - a fullscreen `<video>` element hides everything the page draws
+  over it - and it carries on from one episode to the next. That takes the
+  player's own fullscreen button, which in Chrome, Edge and other Chromium
+  browsers replaces the video's; double-clicking the picture and the F key do
+  the same. Safari and Firefox keep their native control, which fullscreens the
+  video alone: no card there, and fullscreen ends when the next episode starts.
+  F still gives the page fullscreen in those browsers. Phones and tablets keep
+  their native control too, since it is what turns the picture to landscape;
+  autoplay moves on to the next episode everywhere.
 
 **Fixes**
 
