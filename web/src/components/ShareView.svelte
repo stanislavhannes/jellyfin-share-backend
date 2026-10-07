@@ -430,10 +430,11 @@
       }
       startPosition = 0;
       const data = await response.json();
-      // The viewer may have left the player while this was loading. The new
-      // session would then have no player to heartbeat or finish it, and would
-      // hold a viewer slot until the stale-session reaper found it.
-      if (!isPlaying) {
+      // The viewer may have left the player while this was loading - and maybe
+      // started another episode already. Either way this session is no longer
+      // wanted: with no player to heartbeat or finish it, it would hold a
+      // viewer slot until the stale-session reaper found it.
+      if (playbackData?.sessionId !== previous) {
         await finishSession(data.sessionId);
         return;
       }
@@ -504,7 +505,13 @@
     }
   }
 
+  // Every way out of the player ends here - Back, Cancel on the card, the last
+  // episode ending, a refused next episode - and fullscreen ends with it: it
+  // belongs to the page, and the episode list has no business filling the
+  // screen. Autoplay swaps the player without coming through here, so
+  // fullscreen survives the move to the next episode.
   function handlePlayerClose() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     isPlaying = false;
     playbackData = null;
     currentPlayingTitle = '';

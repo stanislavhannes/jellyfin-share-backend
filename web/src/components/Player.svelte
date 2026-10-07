@@ -31,7 +31,7 @@
   const NEXT_UP_SECONDS = 30;
 
   let videoElement;
-    let hls;
+  let hls;
   let heartbeatInterval;
   // error ends playback and offers a way back. recovering is a passing condition
   // hls.js is already working through, and it clears itself once frames flow
@@ -319,7 +319,9 @@
   // activation is still live when this event arrives, which is what allows the
   // new request; a browser that refuses it leaves fullscreen instead.
   const page = () => document.documentElement;
-  let pageFullscreen = false;
+  // Read, not assumed: after autoplay this instance starts inside a page that
+  // is already fullscreen, and no fullscreenchange will say so.
+  let pageFullscreen = document.fullscreenElement === document.documentElement;
 
   async function handleFullscreenChange() {
     if (document.fullscreenElement === videoElement && page().requestFullscreen) {
