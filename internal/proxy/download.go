@@ -88,11 +88,28 @@ func (p *StreamProxy) serveFile(w http.ResponseWriter, r *http.Request, itemID s
 func (p *StreamProxy) serveEpisodesZip(w http.ResponseWriter, r *http.Request, share *models.Share) {
 	ctx := r.Context()
 	itemID := share.JellyfinItemID
-	episodes, err := p.jf.GetEpisodeFilesFor(ctx, share.ItemType, itemID)
-	if err != nil || len(episodes) == 0 {
+	listed, err := p.jf.GetEpisodeFilesFor(ctx, share.ItemType, itemID)
+	if err != nil {
 		log.Printf("Failed to list episodes of %s for download: %v", itemID, err)
 		http.Error(w, "episodes not available", http.StatusBadGateway)
 		return
+	}
+	// A library that shows missing episodes lists them with no file behind
+	// them. They are left out up front, while an error can still be sent: a
+	// season of nothing but missing episodes must not become an empty archive.
+	episodes := listed[:0]
+	for _, ep := range listed {
+		if len(ep.MediaSources) > 0 {
+			episodes = append(episodes, ep)
+		}
+	}
+	if len(episodes) == 0 {
+		log.Printf("ZIP download of %s: none of its %d episodes has a file", itemID, len(listed))
+		http.Error(w, "episodes not available", http.StatusBadGateway)
+		return
+	}
+	if skipped := len(listed) - len(episodes); skipped > 0 {
+		log.Printf("ZIP download of %s: leaving out %d episodes without a file", itemID, skipped)
 	}
 
 	folder := download.Sanitize(share.Title)
@@ -107,13 +124,6 @@ func (p *StreamProxy) serveEpisodesZip(w http.ResponseWriter, r *http.Request, s
 		ep := &episodes[i]
 		if ctx.Err() != nil {
 			return // the viewer cancelled; nothing is listening any more
-		}
-		// A library that shows missing episodes lists them with no file behind
-		// them. There is nothing to put in the archive; aborting over it would
-		// cost the viewer the whole download.
-		if len(ep.MediaSources) == 0 {
-			log.Printf("ZIP download of %s: skipping %s, which has no file", itemID, ep.ID)
-			continue
 		}
 		if err := p.addEpisode(ctx, zw, folder, bySeason, ep); err != nil {
 			// The status line has gone out, so there is no error to send. Stopping
