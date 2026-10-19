@@ -13,6 +13,9 @@
   export let startPosition = 0;
   // { label, name } of the episode that follows, or null when nothing does.
   export let nextUp = null;
+  // Plays the link has left after this one, or null when it has no limit. A
+  // failure says from it whether starting again is possible and what it costs.
+  export let playsLeft = null;
   // Called as (key, position, duration). A callback rather than an event: it
   // also runs while this instance is torn down, when events no longer arrive.
   export let onProgress = null;
@@ -39,6 +42,9 @@
   // again - conflating the two is what put "Playback stopped" over a film that
   // was playing perfectly well.
   let error = null;
+  // What the viewer can do about the error: 'restart' it from the share page,
+  // try another 'browser', or nothing, when the server ended the link itself.
+  let errorFix = null;
   let recovering = null;
   let recoveryAttempts = 0;
   let lastRecoveryAt = 0;
@@ -95,8 +101,10 @@
     }
   }
 
+  // With autoplay called off on the card, the end goes back to the episodes
+  // rather than on to the next one.
   function handleEnded() {
-    finish('ended');
+    finish(autoplayOff ? 'close' : 'ended');
   }
 
   // ---- Progress ----
@@ -107,20 +115,57 @@
   // credits were cut off at, including by the report made on teardown.
   let finished = false;
 
-  function reportProgress() {
-    if (!onProgress || !videoElement) return;
+  // Where playback stands, or null while there is nothing worth keeping. The
+  // same answer goes to the page and, with the heartbeats, to the server.
+  // During AirPlay the element keeps playing here and mirrors the Apple TV, so
+  // its position is the TV's.
+  function currentProgress() {
+    if (!videoElement) return null;
     const duration = videoElement.duration;
     // A stream that has not loaded yet reports 0 or NaN; saving that would wipe
     // the position the viewer is resuming from.
-    if (!(duration > 0) || !Number.isFinite(duration)) return;
-    if (!finished && !(videoElement.currentTime > 0)) return;
+    if (!(duration > 0) || !Number.isFinite(duration)) return null;
+    if (!finished && !(videoElement.currentTime > 0)) return null;
+    return { position: finished ? duration : videoElement.currentTime, duration };
+  }
+
+  // The server takes whole seconds.
+  function progressBody() {
+    const p = currentProgress();
+    return p ? { positionSeconds: Math.floor(p.position), durationSeconds: Math.round(p.duration) } : {};
+  }
+
+  function reportProgress() {
+    const p = currentProgress();
+    if (!onProgress || !p) return;
     lastReportAt = Date.now();
-    onProgress(itemKey, finished ? duration : videoElement.currentTime, duration);
+    onProgress(itemKey, p.position, p.duration);
+  }
+
+  // The tab is closing or going to the background, where a phone may never
+  // wake it again: the exact position goes to the server now rather than with
+  // the next heartbeat, which may never come. A beacon survives the page going.
+  // It is a heartbeat, not a finish - a tab that comes back keeps playing.
+  // Closing a tab fires both pagehide and the visibility change; one beacon does.
+  let lastBeaconAt = 0;
+
+  function saveBeforeLeaving() {
+    reportProgress();
+    const body = progressBody();
+    if (!sessionId || body.durationSeconds == null || Date.now() - lastBeaconAt < 1000) return;
+    lastBeaconAt = Date.now();
+    // Sent as plain text: a typed Blob is not CORS-safelisted, which some
+    // browsers have refused for beacons. The server reads the body as JSON
+    // whatever its type.
+    navigator.sendBeacon?.(`/api/public/sessions/${sessionId}/heartbeat`, JSON.stringify(body));
   }
 
   // ---- Next episode ----
   let remaining = Infinity;
-  $: showNextUp = !!nextUp && !error && !finished && remaining <= NEXT_UP_SECONDS && remaining > 0;
+  // Cancel on the card stops autoplay for this episode only; the credits keep
+  // playing, and leaving is still the Back button's job.
+  let autoplayOff = false;
+  $: showNextUp = !!nextUp && !autoplayOff && !error && !finished && remaining <= NEXT_UP_SECONDS && remaining > 0;
   $: countdown = Math.ceil(remaining);
   // How far through the countdown we are, 0..1, for the fill behind the button.
   $: nextUpFill = Math.min(1, Math.max(0, 1 - remaining / NEXT_UP_SECONDS));
@@ -140,6 +185,11 @@
 
   function playNext() {
     finish('next');
+  }
+
+  function cancelNextUp() {
+    autoplayOff = true;
+    videoElement?.focus();
   }
 
   // An episode ends once, however it ends. "Play now" in the last seconds would
@@ -165,7 +215,7 @@
 
   function initPlayer() {
     if (!playbackData?.playbackUrl) {
-      error = 'No playback URL provided';
+      fail('The stream didn’t arrive.', 'restart');
       return;
     }
 
@@ -228,14 +278,14 @@
               hls.recoverMediaError();
             } else {
               recovering = null;
-              error = 'This stream could not be decoded in this browser';
+              fail('This browser couldn’t play the stream.', 'browser');
               cleanup();
             }
             break;
 
           default:
             recovering = null;
-            error = 'Playback error occurred';
+            fail('The stream stopped and couldn’t be picked up again.', 'restart');
             cleanup();
             break;
         }
@@ -253,13 +303,34 @@
       // had none, so a revoked share or a timed-out session left a blank player
       // with no message. Safari is routed here now, so it needs one.
       videoElement.addEventListener('error', () => {
-        error = 'Playback error occurred';
+        fail('The stream stopped and couldn’t be picked up again.', 'restart');
         cleanup();
       });
     } else {
-      error = 'HLS playback is not supported in this browser';
+      fail('This browser can’t play this stream.', 'browser');
     }
   }
+
+  function fail(message, fix) {
+    error = message;
+    errorFix = fix;
+  }
+
+  // The next step after a failure. On the link's last play there is none to
+  // offer here: the share page has nothing left to start.
+  $: nextStep = !errorFix ? ''
+    : playsLeft === 0 ? 'That was this link’s last play, so it can’t be started again. Ask whoever shared it for another.'
+    : (errorFix === 'browser' ? 'Open the link in Chrome, Edge or Safari, or on another device.' : 'Go back and start it again.')
+      + (playsLeft === null ? '' : ' The play was counted when it started, so that uses another.');
+
+  // What the server's reasons for ending a session mean to the viewer, and
+  // whether starting again is still possible. None of them is about this
+  // browser, so none suggests trying another.
+  const ENDED = {
+    revoked: ['Whoever shared this link switched it off.', null],
+    expired: ['This link has expired.', null],
+    terminated: ['This viewing was ended.', 'restart']
+  };
 
   function startHeartbeat() {
     heartbeatInterval = setInterval(async () => {
@@ -269,16 +340,14 @@
         const response = await fetch(`/api/public/sessions/${sessionId}/heartbeat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            positionSeconds: Math.floor(videoElement?.currentTime || 0)
-          }),
+          body: JSON.stringify(progressBody()),
           credentials: 'include'
         });
 
         if (response.ok) {
           const data = await response.json();
           if (data.status !== 'ok') {
-            error = data.message || 'Session ended';
+            fail(...(ENDED[data.status] || ENDED.terminated));
             cleanup();
           }
         }
@@ -292,6 +361,7 @@
     // First: hls.destroy() below detaches the media, after which the element no
     // longer knows its duration and the position cannot be saved.
     reportProgress();
+    const finalProgress = progressBody();
 
     if (heartbeatInterval) {
       clearInterval(heartbeatInterval);
@@ -308,7 +378,11 @@
       try {
         await fetch(`/api/public/sessions/${sessionId}/finish`, {
           method: 'POST',
-          credentials: 'include'
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(finalProgress),
+          credentials: 'include',
+          // A closing tab still delivers it.
+          keepalive: true
         });
       } catch (e) {
         console.error('Failed to notify session end:', e);
@@ -425,14 +499,20 @@
      never runs; pagehide is the last moment the page is still there to save the
      exact position. A tab sent to the background on a phone may never come
      back, which is what the visibility change covers. -->
-<svelte:window on:keydown={handleKeydown} on:pagehide={reportProgress}
+<svelte:window on:keydown={handleKeydown} on:pagehide={saveBeforeLeaving}
                on:mousemove={wake} on:touchstart={wake} />
-<svelte:document on:visibilitychange={() => document.visibilityState === 'hidden' && reportProgress()} />
+<svelte:document on:visibilitychange={() => document.visibilityState === 'hidden' && saveBeforeLeaving()} />
 
 <div class="player" class:player--idle={idle}>
   <!-- The video is the page. Chrome floats over it and gets out of the way.
        The fullscreen button only appears where it replaces the video's own. -->
   <header class="player__bar">
+    <!-- Back sits where Back is looked for: first, top left. -->
+    <button class="glyph" on:click={handleClose} title="Back (Esc)" aria-label="Back to the share">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M19 12H5M11 18l-6-6 6-6"/>
+      </svg>
+    </button>
     <h2 class="player__title">{title}</h2>
     <div class="player__tools">
       {#if ownFullscreenControl}
@@ -450,11 +530,6 @@
           {/if}
         </button>
       {/if}
-      <button class="glyph" on:click={handleClose} title="Back (Esc)" aria-label="Back to the share">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
-          <path d="M18 6L6 18M6 6l12 12"/>
-        </svg>
-      </button>
     </div>
   </header>
 
@@ -463,6 +538,9 @@
       <div class="player__error">
         <p class="player__error-head">Playback stopped</p>
         <p class="player__error-body">{error}</p>
+        {#if nextStep}
+          <p class="player__error-note">{nextStep}</p>
+        {/if}
         <button class="btn-back" on:click={handleClose}>Back to the share</button>
       </div>
     {:else if recovering}
@@ -501,7 +579,7 @@
     {#if showNextUp}
       <!-- Sits in the corner the native controls leave free, above their bar. -->
       <aside class="nextup" aria-label="Next episode" aria-live="polite">
-        <button class="nextup__x" on:click={handleClose} aria-label="Cancel and go back to the episodes">
+        <button class="nextup__x" on:click={cancelNextUp} aria-label="Don’t play the next episode">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
             <path d="M18 6L6 18M6 6l12 12"/>
           </svg>
@@ -518,7 +596,7 @@
             <span>Play now</span>
             <span class="nextup__count">{countdown}s</span>
           </button>
-          <button class="nextup__cancel" on:click={handleClose}>Cancel</button>
+          <button class="nextup__cancel" on:click={cancelNextUp}>Cancel</button>
         </div>
       </aside>
     {/if}
@@ -577,6 +655,8 @@
   }
 
   .player__title {
+    flex: 1 1 auto;
+    align-self: center;
     font-size: var(--text-md);
     line-height: 1.2;
     color: var(--color-ink);
@@ -667,6 +747,12 @@
 
   .player__error-body {
     max-width: 48ch;
+    color: var(--color-muted);
+  }
+
+  .player__error-note {
+    max-width: 48ch;
+    font-size: var(--text-sm);
     color: var(--color-muted);
   }
 

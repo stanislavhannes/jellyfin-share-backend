@@ -66,7 +66,7 @@ func main() {
 	adminHandler := handlers.NewAdminHandler(db, jf, cfg, sessionManager)
 	downloadSigner := download.NewSigner(cfg.BackendAPIKey)
 	publicHandler := handlers.NewPublicHandler(db, jf, cfg, sessionManager, downloadSigner)
-	streamProxy := proxy.NewStreamProxy(db, jf, cfg, downloadSigner)
+	streamProxy := proxy.NewStreamProxy(db, jf, cfg, downloadSigner, sessionManager)
 
 	// Create router
 	r := chi.NewRouter()
@@ -103,32 +103,43 @@ func main() {
 		r.Get("/stats", adminHandler.GetStats)
 	})
 
-	// Public API (rate limited)
+	// Public API. The calls a viewer makes by hand share a per-IP rate limit.
+	// Images and stream segments get their own, ten times looser: one page of
+	// episode stills or a few minutes of HLS would otherwise spend the first and
+	// lock the viewer out of Play, but they still need some bound.
 	r.Route("/api/public", func(r chi.Router) {
-		r.Use(httprate.LimitByIP(cfg.RateLimitRequests, cfg.RateLimitWindow))
+		r.Group(func(r chi.Router) {
+			r.Use(httprate.LimitByIP(cfg.RateLimitRequests, cfg.RateLimitWindow))
 
-		r.Get("/shares/{token}", publicHandler.GetShareInfo)
-		r.Post("/shares/{token}/password", publicHandler.ValidatePassword)
-		r.Post("/shares/{token}/play", publicHandler.StartPlayback)
-		r.Get("/shares/{token}/episodes", publicHandler.GetShareEpisodes)
-		r.Post("/shares/{token}/episodes/{episodeId}/play", publicHandler.StartEpisodePlayback)
-		r.Post("/shares/{token}/download", publicHandler.RequestDownload)
-		r.Post("/shares/{token}/episodes/download", publicHandler.RequestAllEpisodesDownload)
-		r.Post("/shares/{token}/episodes/{episodeId}/download", publicHandler.RequestEpisodeDownload)
-		r.Post("/sessions/{sessionId}/heartbeat", publicHandler.Heartbeat)
-		r.Post("/sessions/{sessionId}/finish", publicHandler.FinishPlayback)
+			r.Get("/shares/{token}", publicHandler.GetShareInfo)
+			r.Post("/shares/{token}/password", publicHandler.ValidatePassword)
+			r.Post("/shares/{token}/play", publicHandler.StartPlayback)
+			r.Get("/shares/{token}/episodes", publicHandler.GetShareEpisodes)
+			r.Get("/shares/{token}/progress", publicHandler.GetShareProgress)
+			r.Post("/shares/{token}/episodes/{episodeId}/play", publicHandler.StartEpisodePlayback)
+			r.Post("/shares/{token}/download", publicHandler.RequestDownload)
+			r.Post("/shares/{token}/episodes/download", publicHandler.RequestAllEpisodesDownload)
+			r.Post("/shares/{token}/episodes/{episodeId}/download", publicHandler.RequestEpisodeDownload)
+			r.Post("/sessions/{sessionId}/heartbeat", publicHandler.Heartbeat)
+			r.Post("/sessions/{sessionId}/finish", publicHandler.FinishPlayback)
 
-		// Image proxy
-		r.Get("/images/{token}/{type}", streamProxy.ServeImage)
+			// WebVTT sidecar for text subtitles
+			r.Get("/subtitles/{sessionId}/{index}", streamProxy.ServeSubtitle)
 
-		// WebVTT sidecar for text subtitles
-		r.Get("/subtitles/{sessionId}/{index}", streamProxy.ServeSubtitle)
+			// The file itself, authorised by the ticket the POSTs above hand out
+			r.Get("/downloads/{ticket}", streamProxy.ServeDownload)
+		})
 
-		// The file itself, authorised by the ticket the POSTs above hand out
-		r.Get("/downloads/{ticket}", streamProxy.ServeDownload)
+		r.Group(func(r chi.Router) {
+			r.Use(httprate.LimitByIP(cfg.RateLimitRequests*10, cfg.RateLimitWindow))
 
-		// Stream proxy (no rate limit for streaming)
-		r.Get("/stream/{sessionId}/*", streamProxy.ServeStream)
+			// Image proxy
+			r.Get("/images/{token}/{type}", streamProxy.ServeImage)
+			r.Get("/images/{token}/episode/{episodeId}", streamProxy.ServeEpisodeImage)
+
+			// Stream proxy, authorised by its live session
+			r.Get("/stream/{sessionId}/*", streamProxy.ServeStream)
+		})
 	})
 
 	// Serve static frontend
@@ -141,6 +152,13 @@ func main() {
 
 	// Serve static assets from filesystem
 	r.Handle("/assets/*", http.StripPrefix("/assets/", http.FileServer(http.Dir("web/dist/assets"))))
+
+	// The logo set (icons, manifest). Browsers ask for /favicon.ico on their own,
+	// whatever the page links, so it is answered from the same folder.
+	r.Handle("/brand/*", http.StripPrefix("/brand/", http.FileServer(http.Dir("web/dist/brand"))))
+	r.Get("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "web/dist/brand/favicon.ico")
+	})
 
 	// Start background cleanup task
 	go startCleanupTask(db, cfg)

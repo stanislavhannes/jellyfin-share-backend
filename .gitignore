@@ -3,6 +3,9 @@
 *.exe
 /tmp/
 
+# Local demo data (scripts/local-demo.sh)
+.local/
+
 # Environment files
 .env
 .env.local

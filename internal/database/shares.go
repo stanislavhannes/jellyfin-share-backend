@@ -73,15 +73,38 @@ func (db *DB) GetSharesByUser(ctx context.Context, jellyfinUserID string) ([]mod
 	return shares, nil
 }
 
-func (db *DB) GetAllShares(ctx context.Context, limit, offset int) ([]models.Share, error) {
+// GetSharesPage returns up to limit links, newest first, starting below the
+// cursor - or from the top when there is none. id breaks ties between links
+// created in the same instant, so no link falls between two pages.
+func (db *DB) GetSharesPage(ctx context.Context, limit int, after *models.PageCursor) ([]models.Share, error) {
 	var shares []models.Share
-	query := `SELECT * FROM shares ORDER BY created_at DESC LIMIT $1 OFFSET $2`
-
-	err := db.SelectContext(ctx, &shares, query, limit, offset)
+	var err error
+	if after == nil {
+		query := `SELECT * FROM shares ORDER BY created_at DESC, id DESC LIMIT $1`
+		err = db.SelectContext(ctx, &shares, query, limit)
+	} else {
+		query := `SELECT * FROM shares WHERE (created_at, id) < ($2, $3)
+			ORDER BY created_at DESC, id DESC LIMIT $1`
+		err = db.SelectContext(ctx, &shares, query, limit, after.CreatedAt, after.ID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get shares: %w", err)
 	}
 	return shares, nil
+}
+
+// CountShares counts every link, and those that can still be watched - not
+// revoked, not past their expiry. The index shows both however many rows it
+// has loaded so far.
+func (db *DB) CountShares(ctx context.Context) (total, live int, err error) {
+	query := `
+		SELECT COUNT(*),
+		       COUNT(*) FILTER (WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW()))
+		FROM shares`
+	if err := db.QueryRowContext(ctx, query).Scan(&total, &live); err != nil {
+		return 0, 0, fmt.Errorf("failed to count shares: %w", err)
+	}
+	return total, live, nil
 }
 
 func (db *DB) RevokeShare(ctx context.Context, id uuid.UUID) error {

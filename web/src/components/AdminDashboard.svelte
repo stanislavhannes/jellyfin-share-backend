@@ -1,11 +1,20 @@
 <script>
-  import { onMount, createEventDispatcher } from 'svelte';
+  import BrandMark from './BrandMark.svelte';
+  import { onMount, tick, createEventDispatcher } from 'svelte';
 
   export let apiKey;
 
   const dispatch = createEventDispatcher();
 
+  // The index loads a page at a time, newest first. total and live come from
+  // the server, so the counts are right however many rows are loaded.
+  const PAGE_SIZE = 50;
   let shares = [];
+  let total = 0;
+  let live = 0;
+  let hasMore = false;
+  let loadingMore = false;
+  let moreError = '';
   let loading = true;
   let error = null;
   let selectedShare = null;
@@ -26,20 +35,67 @@
     return () => clearTimeout(copyTimer);
   });
 
+  // The next page continues below the last link held, not at a row number, so
+  // links created or cleaned up in between cannot shift or repeat rows.
+  async function fetchPage(after) {
+    const query = new URLSearchParams({ limit: String(PAGE_SIZE) });
+    if (after) {
+      query.set('beforeCreatedAt', after.createdAt);
+      query.set('beforeId', after.id);
+    }
+    const response = await fetch(`/api/admin/shares?${query}`, {
+      headers: { 'X-Backend-Key': apiKey }
+    });
+    if (!response.ok) throw new Error('The backend refused the request. Check the key is still valid.');
+    const data = await response.json();
+    return { shares: data.shares || [], total: data.total ?? 0, live: data.live ?? 0, hasMore: !!data.hasMore };
+  }
+
   async function loadShares() {
+    // A page still loading from before belongs to the list being replaced.
+    loadGeneration += 1;
+    loadingMore = false;
     loading = true;
     error = null;
+    moreError = '';
     try {
-      const response = await fetch('/api/admin/shares', {
-        headers: { 'X-Backend-Key': apiKey }
-      });
-      if (!response.ok) throw new Error('The backend refused the request. Check the key is still valid.');
-      const data = await response.json();
-      shares = data.shares || [];
+      ({ shares, total, live, hasMore } = await fetchPage(null));
     } catch (e) {
       error = e.message;
     } finally {
       loading = false;
+    }
+  }
+
+  // Bumped by every reload, so a page still loading from before it is dropped
+  // instead of being appended to the fresh list.
+  let loadGeneration = 0;
+
+  async function loadMore() {
+    if (loadingMore) return;
+    loadingMore = true;
+    moreError = '';
+    const generation = loadGeneration;
+    try {
+      // Awaited before anything is taken from it: the list may have changed
+      // meanwhile - a revoke marked in place, or a reload - and must not be put
+      // back as it was. The counts stay as the first page and later revokes left
+      // them; only the rows and whether more follow come from here.
+      const page = await fetchPage(shares[shares.length - 1]);
+      if (generation === loadGeneration && page.shares.length) {
+        shares = [...shares, ...page.shares];
+        hasMore = page.hasMore;
+        // Focus moves on to the first link just loaded: the button that had it
+        // goes away with the last page, and a keyboard would land back at the top.
+        await tick();
+        document.querySelector(`.row__item[data-id="${page.shares[0].id}"]`)?.focus();
+      } else if (generation === loadGeneration) {
+        hasMore = page.hasMore;
+      }
+    } catch (e) {
+      if (generation === loadGeneration) moreError = 'Couldn’t load more links. Try again.';
+    } finally {
+      if (generation === loadGeneration) loadingMore = false;
     }
   }
 
@@ -70,7 +126,9 @@
         headers: { 'X-Backend-Key': apiKey }
       });
       if (!response.ok) throw new Error('revoke failed');
-      loadShares();
+      // Marked in place: reloading would drop every page loaded below the first.
+      if (getStatus(share) === 'active') live = Math.max(0, live - 1);
+      shares = shares.map((s) => (s.id === share.id ? { ...s, revokedAt: new Date().toISOString() } : s));
       if (selectedShare?.id === share.id) closeDetails();
     } catch (e) {
       revokeError = `Couldn’t revoke “${share.title}”. The link is still live — try again.`;
@@ -157,14 +215,12 @@
     copiedId = share.id;
     copyTimer = setTimeout(() => (copiedId = null), 1600);
   }
-
-  $: liveCount = shares.filter((s) => getStatus(s) === 'active').length;
 </script>
 
 <!-- N5 · Floating pill. Content-sized, visibly detached, blurred over the canvas. -->
 <nav class="pill" aria-label="Admin">
-  <span class="pill__wordmark">Jellyfin Share</span>
-  <span class="pill__count" aria-live="polite">{shares.length} links</span>
+  <span class="pill__wordmark"><BrandMark />Jellyfin Share</span>
+  <span class="pill__count" aria-live="polite">{total} {total === 1 ? 'link' : 'links'}</span>
   <button class="pill__icon" on:click={loadShares} disabled={loading} aria-label="Reload the index">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
       <path d="M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 01-9 9 9.75 9.75 0 01-6.74-2.74L3 16M3 21v-5h5"/>
@@ -178,7 +234,7 @@
     <p class="index__lede">
       Every link you have handed out, and what it is doing right now.
       {#if !loading && !error && shares.length > 0}
-        <span class="index__live">{liveCount} of {shares.length} still live.</span>
+        <span class="index__live">{live} of {total} still live.</span>
       {/if}
     </p>
 
@@ -210,7 +266,7 @@
         {#each shares as share (share.id)}
           {@const status = getStatus(share)}
           <li class="row" class:row--spent={status !== 'active'}>
-            <button class="row__item" on:click={() => viewDetails(share)}>
+            <button class="row__item" data-id={share.id} on:click={() => viewDetails(share)}>
               <span class="row__title">{share.title}</span>
               <span class="row__sub">
                 {share.itemType} · created {formatTimeAgo(share.createdAt)}{#if share.hasPassword}{' · password'}{/if}
@@ -252,6 +308,16 @@
           </li>
         {/each}
       </ul>
+
+      {#if hasMore}
+        <div class="more">
+          <button class="btn-ghost" on:click={loadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading' : 'Show older links'}
+          </button>
+          <span class="more__left">{shares.length} of {total} shown</span>
+        </div>
+      {/if}
+      {#if moreError}<p class="banner" role="alert">{moreError}</p>{/if}
     {/if}
   </main>
 
@@ -259,7 +325,7 @@
   <footer class="colophon">
     <p class="colophon__line">
       <a class="foot-link" href="https://github.com/stanislavhannes/jellyfin-share-backend" target="_blank" rel="noopener noreferrer">Jellyfin Share</a>
-      · admin · {shares.length} indexed, {liveCount} live
+      · admin · {total} indexed, {live} live
     </p>
     <p class="colophon__note">
       The backend key is kept in this browser’s localStorage and sent only as an
@@ -380,6 +446,9 @@
   }
 
   .pill__wordmark {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
     font-family: var(--font-display);
     font-size: var(--text-md);
     letter-spacing: -0.01em;
@@ -591,6 +660,22 @@
   .row__item:disabled { opacity: 0.55; cursor: not-allowed; }
 
   /* ---- States ---- */
+  /* The index continues below the last row, in the row's own voice. */
+  .more {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
+    padding-block: var(--space-lg);
+  }
+
+  .more__left {
+    font-family: var(--font-outlier);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-muted);
+  }
+
   .state {
     display: grid;
     gap: var(--space-sm);

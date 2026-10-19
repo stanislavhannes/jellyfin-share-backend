@@ -1,8 +1,13 @@
-.PHONY: help dev dev-up dev-down dev-logs dev-shell prod prod-up prod-down prod-logs build clean test
+.PHONY: help demo-up demo-down demo-reset dev dev-up dev-down dev-logs dev-shell prod prod-up prod-down prod-logs build clean test
 
 # Default target
 help:
 	@echo "JFShare Backend - Development & Deployment Commands"
+	@echo ""
+	@echo "Local demo (app from this checkout + a test Jellyfin):"
+	@echo "  make demo-up     - Generate test media, set up Jellyfin, start everything"
+	@echo "  make demo-down   - Stop the demo, keep its data"
+	@echo "  make demo-reset  - Stop the demo and delete its data"
 	@echo ""
 	@echo "Development (in Docker):"
 	@echo "  make dev-up      - Start development environment"
@@ -20,6 +25,19 @@ help:
 	@echo "Utilities:"
 	@echo "  make generate-keys - Generate API keys"
 	@echo "  make clean         - Remove all containers and volumes"
+
+# =============================================================================
+# LOCAL DEMO (see scripts/local-demo.sh)
+# =============================================================================
+
+demo-up:
+	scripts/local-demo.sh up
+
+demo-down:
+	scripts/local-demo.sh down
+
+demo-reset:
+	scripts/local-demo.sh reset
 
 # =============================================================================
 # DEVELOPMENT (Docker-based, no local Go/Node needed)

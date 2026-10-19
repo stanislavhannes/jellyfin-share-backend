@@ -3,6 +3,7 @@ package models
 import (
 	"database/sql"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -83,6 +84,30 @@ func (s *Share) ExpiresAtPtr() *time.Time {
 
 func (s *Share) IsRevoked() bool {
 	return s.RevokedAt.Valid
+}
+
+// ShareGone is what a link that no longer opens says about itself: why, since
+// when, and which link it was, so the viewer can tell whoever shared it.
+type ShareGone struct {
+	Error   string    `json:"error"`
+	Reason  string    `json:"reason"` // "revoked" or "expired"
+	Title   string    `json:"title"`
+	// SeriesName is set by the handler for a season link, as on SharePublicInfo.
+	SeriesName string    `json:"seriesName,omitempty"`
+	EndedAt time.Time `json:"endedAt"`
+}
+
+// Gone returns why the share no longer opens, or nil while it still does. A
+// revoke is named over an expiry: it is the sharer's own decision, and the
+// more useful thing to hear.
+func (s *Share) Gone() *ShareGone {
+	switch {
+	case s.IsRevoked():
+		return &ShareGone{Error: "share is no longer available", Reason: "revoked", Title: s.Title, EndedAt: s.RevokedAt.Time}
+	case s.IsExpired():
+		return &ShareGone{Error: "share has expired", Reason: "expired", Title: s.Title, EndedAt: s.ExpiresAt.Time}
+	}
+	return nil
 }
 
 func (s *Share) IsValid() bool {
@@ -178,6 +203,9 @@ type SubtitleTrack struct {
 
 type SharePublicInfo struct {
 	Title                    string    `json:"title"`
+	// SeriesName names the show a season share belongs to. Jellyfin titles a
+	// season "Season 1"; on its own that does not say which show.
+	SeriesName               string    `json:"seriesName,omitempty"`
 	Overview                 string    `json:"overview,omitempty"`
 	Tagline                  string    `json:"tagline,omitempty"`
 	RuntimeSeconds           int64     `json:"runtimeSeconds,omitempty"`
@@ -187,6 +215,9 @@ type SharePublicInfo struct {
 	ItemType                 string    `json:"itemType"`
 	ExpiresAt                *time.Time `json:"expiresAt"`
 	RequiresPassword         bool      `json:"requiresPassword"`
+	// Locked is true while the password has not been entered in this browser.
+	// The response then carries only the title, artwork and terms.
+	Locked                   bool      `json:"locked"`
 	MaxTotalPlays            *int64    `json:"maxTotalPlays,omitempty"`
 	TotalPlays               int       `json:"totalPlays"`
 	MaxConcurrentViewers     *int64    `json:"maxConcurrentViewers,omitempty"`
@@ -204,8 +235,34 @@ type SharePublicInfo struct {
 	Directors       []string          `json:"directors,omitempty"`
 	Actors          []ActorInfo       `json:"actors,omitempty"`
 	VideoQuality    *VideoQualityInfo `json:"videoQuality,omitempty"`
+	// DownloadBytes is the size of the file a download hands over, so a viewer
+	// on mobile data knows what a tap on Download costs.
+	DownloadBytes   int64             `json:"downloadBytes,omitempty"`
 	AudioTracks     []AudioTrack      `json:"audioTracks,omitempty"`
 	SubtitleTracks  []SubtitleTrack   `json:"subtitleTracks,omitempty"`
+}
+
+// WithholdDetails strips what a password link should not say before its
+// password: the synopsis, credits, ratings, file and track details. What stays
+// is what the link points at - title and artwork - and its terms, so a viewer
+// still knows what they were sent and what it allows.
+func (info *SharePublicInfo) WithholdDetails() {
+	info.Locked = true
+	info.Overview = ""
+	info.Tagline = ""
+	info.RuntimeSeconds = 0
+	info.Year = 0
+	info.OfficialRating = ""
+	info.CommunityRating = 0
+	info.CriticRating = 0
+	info.Genres = nil
+	info.Studios = nil
+	info.Directors = nil
+	info.Actors = nil
+	info.VideoQuality = nil
+	info.DownloadBytes = 0
+	info.AudioTracks = nil
+	info.SubtitleTracks = nil
 }
 
 // DownloadResponse carries the URL the browser fetches the file from. It is
@@ -260,6 +317,38 @@ func (s *Share) ToPublicInfo(baseURL string) SharePublicInfo {
 	}
 
 	return info
+}
+
+// The admin index loads links a page at a time. 50 rows is a long screen of
+// the index; 200 caps what one request may ask for.
+const (
+	DefaultPageSize = 50
+	MaxPageSize     = 200
+)
+
+// PageCursor is the last link a page ended on; the next page starts below it.
+// Paging by position instead of by offset keeps the pages steady while links
+// are created, or revoked ones cleaned up, between two loads.
+type PageCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
+// ParsePage reads a page request: its size, and the link it continues after.
+// Anything missing, unreadable or out of range falls back to the first page at
+// the default size instead of an error - the index should always show something.
+func ParsePage(limit, beforeCreatedAt, beforeID string) (int, *PageCursor) {
+	l, err := strconv.Atoi(limit)
+	if err != nil || l <= 0 {
+		l = DefaultPageSize
+	}
+	l = min(l, MaxPageSize)
+	at, errAt := time.Parse(time.RFC3339Nano, beforeCreatedAt)
+	id, errID := uuid.Parse(beforeID)
+	if errAt != nil || errID != nil {
+		return l, nil
+	}
+	return l, &PageCursor{CreatedAt: at, ID: id}
 }
 
 type ShareListItem struct {

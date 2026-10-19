@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/database"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/download"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/jellyfin"
+	"github.com/jellyfin-share/jellyfin-share-backend/internal/middleware"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/models"
 )
 
@@ -24,14 +26,18 @@ type StreamProxy struct {
 	cfg        *config.Config
 	downloads  *download.Signer
 	httpClient *http.Client
+	episodes   *episodeCache
+	sessions   *middleware.ShareSessionManager
 }
 
-func NewStreamProxy(db *database.DB, jf *jellyfin.Client, cfg *config.Config, downloads *download.Signer) *StreamProxy {
+func NewStreamProxy(db *database.DB, jf *jellyfin.Client, cfg *config.Config, downloads *download.Signer, sessions *middleware.ShareSessionManager) *StreamProxy {
 	return &StreamProxy{
 		db:        db,
 		jf:        jf,
 		cfg:       cfg,
 		downloads: downloads,
+		episodes:  newEpisodeCache(),
+		sessions:  sessions,
 		httpClient: &http.Client{
 			Timeout: 0, // No timeout for streaming
 			Transport: &http.Transport{
@@ -381,19 +387,66 @@ func (p *StreamProxy) ServeImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid image type", http.StatusBadRequest)
 		return
 	}
+	p.proxyImage(w, r, imageURL, false)
+}
 
-	// Add query params for sizing
+// ServeEpisodeImage proxies an episode's still for the share's episode list.
+// The episode must belong to the share, or any token would open every image on
+// the server, and the link must be live and, if it has a password, unlocked: the
+// list the stills belong to is only shown then.
+func (p *StreamProxy) ServeEpisodeImage(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	episodeID := chi.URLParam(r, "episodeId")
+
+	share, err := p.db.GetShareByToken(r.Context(), token)
+	if err != nil || share == nil || !share.HasEpisodes() || share.Gone() != nil ||
+		(share.RequiresPassword() && !p.sessions.GetSessionFromCookie(r, token)) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	// Other stills may be waiting on this listing, so it must not end with this
+	// request.
+	episodes, err := p.episodes.get(share.ID, func() ([]jellyfin.EpisodeInfo, error) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+		defer cancel()
+		return p.jf.GetEpisodesFor(ctx, share.ItemType, share.JellyfinItemID)
+	})
+	if err != nil {
+		http.Error(w, "error", http.StatusBadGateway)
+		return
+	}
+	if !jellyfin.ContainsEpisode(episodes, episodeID) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	// Behind a password the still is for this viewer only: a shared cache in
+	// front of the app must not hand it to someone without the cookie.
+	p.proxyImage(w, r, p.jf.GetPosterURL(episodeID), share.RequiresPassword())
+}
+
+// imageLimits bounds the sizing a caller may ask Jellyfin for. The image routes
+// are only loosely rate limited, so without bounds any token holder could make Jellyfin
+// render arbitrarily large images, each a fresh cache miss.
+var imageLimits = map[string]int{"maxWidth": 1920, "maxHeight": 1920, "quality": 100}
+
+// imageSizing keeps the sizing parameters that are whole numbers, capped at
+// imageLimits; anything else is dropped and Jellyfin's default applies.
+func imageSizing(query url.Values) url.Values {
 	sizing := url.Values{}
-	if maxWidth := r.URL.Query().Get("maxWidth"); maxWidth != "" {
-		sizing.Set("maxWidth", maxWidth)
+	for name, limit := range imageLimits {
+		n, err := strconv.Atoi(query.Get(name))
+		if err != nil || n < 1 {
+			continue
+		}
+		sizing.Set(name, strconv.Itoa(min(n, limit)))
 	}
-	if maxHeight := r.URL.Query().Get("maxHeight"); maxHeight != "" {
-		sizing.Set("maxHeight", maxHeight)
-	}
-	if quality := r.URL.Query().Get("quality"); quality != "" {
-		sizing.Set("quality", quality)
-	}
-	if len(sizing) > 0 {
+	return sizing
+}
+
+// proxyImage fetches imageURL from Jellyfin, passing on the caller's sizing.
+// private keeps the image out of shared caches and other origins.
+func (p *StreamProxy) proxyImage(w http.ResponseWriter, r *http.Request, imageURL string, private bool) {
+	if sizing := imageSizing(r.URL.Query()); len(sizing) > 0 {
 		imageURL += "?" + sizing.Encode()
 	}
 
@@ -422,9 +475,22 @@ func (p *StreamProxy) ServeImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Enable caching for images
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Cache an image for a day, but not a miss: an image added in Jellyfin
+	// should show on the next visit.
+	switch {
+	case resp.StatusCode != http.StatusOK:
+		w.Header().Set("Cache-Control", "no-store")
+	case private:
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+	default:
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	}
+	if private {
+		// Dropped even if Jellyfin sent one: the copy above passes its headers on.
+		w.Header().Del("Access-Control-Allow-Origin")
+	} else {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	}
 
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)

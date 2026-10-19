@@ -1,0 +1,64 @@
+# =============================================================================
+# LOCAL DEMO: the app built from this checkout, next to a throwaway Jellyfin
+# with generated test media. Nothing here is meant for production.
+#
+# Usage: make demo-up   (runs scripts/local-demo.sh, which sets Jellyfin up,
+#                        writes .env.local and starts everything)
+#        make demo-down
+# =============================================================================
+
+name: jfshare-demo
+
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jfshare-demo-jellyfin
+    ports:
+      - "8096:8096"
+    volumes:
+      - ./.local/jellyfin/config:/config
+      - ./.local/jellyfin/cache:/cache
+      - ./.local/media:/media:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8096/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: jfshare-demo-db
+    environment:
+      - POSTGRES_USER=jfshare
+      - POSTGRES_PASSWORD=jfshare
+      - POSTGRES_DB=jfshare
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No host port: a local Postgres often already holds 5432.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jfshare"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  jfshare:
+    build: .
+    image: jfshare:local
+    container_name: jfshare-demo-app
+    ports:
+      - "8097:8097"
+    env_file: .env.local
+    environment:
+      - JFSHARE_PORT=8097
+      - JFSHARE_DB_DSN=postgres://jfshare:jfshare@postgres:5432/jfshare?sslmode=disable
+      - JFSHARE_JELLYFIN_BASE_URL=http://jellyfin:8096
+      - JFSHARE_PUBLIC_BASE_URL=http://localhost:8097
+      - JFSHARE_LOG_LEVEL=debug
+    depends_on:
+      postgres:
+        condition: service_healthy
+      jellyfin:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

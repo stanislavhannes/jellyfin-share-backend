@@ -280,25 +280,57 @@ type EpisodeInfo struct {
 	ID                string `json:"id"`
 	Name              string `json:"name"`
 	IndexNumber       int    `json:"indexNumber"`
+	// Overview is the episode's synopsis. Of the episode queries only
+	// GetEpisodeListFor asks Jellyfin for it.
 	Overview          string `json:"overview,omitempty"`
 	RuntimeSeconds    int64  `json:"runtimeSeconds,omitempty"`
 	HasPoster         bool   `json:"hasPoster"`
 	PremiereDate      string `json:"premiereDate,omitempty"`
-	// SeasonNumber is set when the list spans more than one season, so a flattened
-	// Series listing can still tell S01E02 from S02E02.
+	// SeasonNumber is the episode's season (Jellyfin's ParentIndexNumber), set
+	// on every list; the page names it only on a Series link, which spans seasons.
 	SeasonNumber      int    `json:"seasonNumber,omitempty"`
+	// SizeBytes is the episode's file, which a download hands over as it is. Only
+	// GetEpisodeListFor fills it.
+	SizeBytes         int64  `json:"sizeBytes,omitempty"`
+}
+
+// ContainsEpisode is the check that keeps an episode request inside its share.
+func ContainsEpisode(episodes []EpisodeInfo, id string) bool {
+	for _, ep := range episodes {
+		if ep.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // GetEpisodesFor returns the episodes a Season or Series item contains, in
 // running order. Any other item type has none.
 func (c *Client) GetEpisodesFor(ctx context.Context, itemType, itemID string) ([]EpisodeInfo, error) {
-	items, err := c.episodeItems(ctx, itemType, itemID, "")
+	return c.episodes(ctx, itemType, itemID, "")
+}
+
+// GetEpisodeListFor is GetEpisodesFor with each episode's file size and
+// overview, for the list a viewer sees. Jellyfin leaves both out of a list
+// unless asked, and the size costs every episode's media sources, so the
+// checks that only need the ids - is this episode in the share - do without.
+func (c *Client) GetEpisodeListFor(ctx context.Context, itemType, itemID string) ([]EpisodeInfo, error) {
+	return c.episodes(ctx, itemType, itemID, "MediaSources,Overview")
+}
+
+func (c *Client) episodes(ctx context.Context, itemType, itemID, fields string) ([]EpisodeInfo, error) {
+	items, err := c.episodeItems(ctx, itemType, itemID, fields)
 	if err != nil {
 		return nil, err
 	}
 	episodes := make([]EpisodeInfo, 0, len(items))
 	for _, item := range items {
+		var size int64
+		if len(item.MediaSources) > 0 {
+			size = item.MediaSources[0].Size
+		}
 		episodes = append(episodes, EpisodeInfo{
+			SizeBytes:      size,
 			ID:             item.ID,
 			Name:           item.Name,
 			IndexNumber:    item.IndexNumber,
@@ -312,8 +344,8 @@ func (c *Client) GetEpisodesFor(ctx context.Context, itemType, itemID string) ([
 	return episodes, nil
 }
 
-// GetEpisodeFilesFor is GetEpisodesFor with each episode's media sources, so
-// the files can be fetched without a lookup per episode. It is the same query,
+// GetEpisodeFilesFor returns the episode items with their media sources and
+// paths, so the files can be fetched without a lookup per episode. It is the same query,
 // so a ZIP holds exactly the episodes the page lists.
 func (c *Client) GetEpisodeFilesFor(ctx context.Context, itemType, itemID string) ([]ItemInfo, error) {
 	return c.episodeItems(ctx, itemType, itemID, "MediaSources,Path")

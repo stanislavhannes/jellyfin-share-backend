@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Jellyfin Share">
+  <title>Jellyfin Share</title>
+  <path d="M34 26 L94 60 L34 94 Z" fill="none" stroke="#b1b9bd" stroke-width="11" stroke-linejoin="round"/>
+  <circle cx="34" cy="26" r="15" fill="#e6ecf0"/>
+  <circle cx="34" cy="94" r="15" fill="#e6ecf0"/>
+  <circle cx="94" cy="60" r="16" fill="#05a4dc"/>
+</svg>

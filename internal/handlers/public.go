@@ -54,12 +54,15 @@ func (h *PublicHandler) GetShareInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if share.IsExpired() {
-		writeError(w, http.StatusGone, "share has expired")
-		return
-	}
-	if share.IsRevoked() {
-		writeError(w, http.StatusGone, "share is no longer available")
+	if gone := share.Gone(); gone != nil {
+		// A season is titled "Season 1"; the show is the name the viewer knows.
+		// Best effort: the page says the season alone if Jellyfin is down.
+		if share.ItemType == "Season" {
+			if item, err := h.jf.GetItem(r.Context(), share.JellyfinItemID); err == nil && item != nil {
+				gone.SeriesName = item.SeriesName
+			}
+		}
+		writeJSON(w, http.StatusGone, gone)
 		return
 	}
 
@@ -77,6 +80,14 @@ func (h *PublicHandler) GetShareInfo(w http.ResponseWriter, r *http.Request) {
 	} else if item != nil {
 		h.enrichShareInfo(&info, item, token)
 	}
+	// A password link shows what it points at and its terms, and nothing else,
+	// until this browser has entered the password.
+	if share.RequiresPassword() && !h.sessions.GetSessionFromCookie(r, token) {
+		info.WithholdDetails()
+		writeJSON(w, http.StatusOK, info)
+		return
+	}
+
 	if item != nil || share.HasEpisodes() {
 		info.AudioTracks, info.SubtitleTracks = h.tracksForItem(r.Context(), item, share.ItemType, share.JellyfinItemID)
 	}
@@ -88,6 +99,10 @@ func (h *PublicHandler) enrichShareInfo(info *models.SharePublicInfo, item *jell
 	// Year
 	if item.ProductionYear > 0 {
 		info.Year = item.ProductionYear
+	}
+
+	if item.Type == "Season" {
+		info.SeriesName = item.SeriesName
 	}
 
 	// Tagline
@@ -142,6 +157,8 @@ func (h *PublicHandler) enrichShareInfo(info *models.SharePublicInfo, item *jell
 	// Video quality info
 	if len(item.MediaSources) > 0 {
 		ms := item.MediaSources[0]
+		// The first source is the file a download serves.
+		info.DownloadBytes = ms.Size
 		quality := &models.VideoQualityInfo{
 			Container: ms.Container,
 			Bitrate:   ms.Bitrate / 1000, // Convert to kbps
@@ -594,12 +611,8 @@ func (h *PublicHandler) publicShare(w http.ResponseWriter, r *http.Request) (*mo
 		return nil, false
 	}
 
-	if !share.IsValid() {
-		if share.IsExpired() {
-			writeError(w, http.StatusGone, "share has expired")
-		} else {
-			writeError(w, http.StatusGone, "share is no longer available")
-		}
+	if gone := share.Gone(); gone != nil {
+		writeJSON(w, http.StatusGone, gone)
 		return nil, false
 	}
 
@@ -757,6 +770,7 @@ func (h *PublicHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.UpdateSessionHeartbeat(r.Context(), sessionID, req.PositionSeconds); err != nil {
 		log.Printf("Failed to update heartbeat: %v", err)
 	}
+	h.recordProgress(r.Context(), session, share, req)
 
 	// Update share activity
 	h.db.UpdateLastActivity(r.Context(), session.ShareID)
@@ -764,6 +778,43 @@ func (h *PublicHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, models.HeartbeatResponse{
 		Status: "ok",
 	})
+}
+
+// recordProgress keeps what a playing session reported as the link's progress,
+// against the item the session is pinned to - never an item the request names -
+// and only while models.MayRecordProgress allows it.
+// Casting reports through the same calls: the page sends the receiver's
+// position with its heartbeats, and AirPlay plays through the page's own video
+// element, so both land here.
+func (h *PublicHandler) recordProgress(ctx context.Context, session *models.ShareSession, share *models.Share, req models.HeartbeatRequest) {
+	if !models.MayRecordProgress(session, share) {
+		return
+	}
+	pos, dur, ok := models.ReportedProgress(req.PositionSeconds, req.DurationSeconds)
+	if !ok {
+		return
+	}
+	// SaveProgress applies models.ReplacesProgress: a brief start does not
+	// replace where the link was really left.
+	if err := h.db.SaveProgress(ctx, session.ShareID, session.JellyfinItemID.String, pos, dur); err != nil {
+		log.Printf("Failed to save progress: %v", err)
+	}
+}
+
+// GetShareProgress answers where the link's viewers left off, for the film or
+// for each episode. Like the episode list, it needs the password first.
+func (h *PublicHandler) GetShareProgress(w http.ResponseWriter, r *http.Request) {
+	share, ok := h.publicShare(w, r)
+	if !ok {
+		return
+	}
+	rows, err := h.db.GetProgress(r.Context(), share.ID)
+	if err != nil {
+		log.Printf("Failed to get progress: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to get progress")
+		return
+	}
+	writeJSON(w, http.StatusOK, models.NewShareProgress(share.JellyfinItemID, rows))
 }
 
 func (h *PublicHandler) FinishPlayback(w http.ResponseWriter, r *http.Request) {
@@ -781,6 +832,14 @@ func (h *PublicHandler) FinishPlayback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !session.FinishedAt.Valid {
+		// The last position the page knew, sent as it leaves. Optional: a page
+		// that closed without it keeps the progress from its last heartbeat.
+		var req models.HeartbeatRequest
+		if json.NewDecoder(r.Body).Decode(&req) == nil {
+			share, _ := h.db.GetShareByID(r.Context(), session.ShareID)
+			h.recordProgress(r.Context(), session, share, req)
+		}
+
 		if err := h.db.FinishSession(r.Context(), sessionID, models.TerminationReasonNormal); err != nil {
 			log.Printf("Failed to finish session: %v", err)
 		}
@@ -804,16 +863,6 @@ func (h *PublicHandler) episodesForShare(ctx context.Context, share *models.Shar
 	return h.jf.GetEpisodesFor(ctx, share.ItemType, share.JellyfinItemID)
 }
 
-// containsEpisode is the check that keeps an episode request inside its share.
-func containsEpisode(episodes []jellyfin.EpisodeInfo, id string) bool {
-	for _, ep := range episodes {
-		if ep.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
 // GetShareEpisodes returns episodes for a Season or Series share
 func (h *PublicHandler) GetShareEpisodes(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
@@ -829,7 +878,8 @@ func (h *PublicHandler) GetShareEpisodes(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	episodes, err := h.episodesForShare(r.Context(), share)
+	// The same list episodesForShare checks against, with each file's size.
+	episodes, err := h.jf.GetEpisodeListFor(r.Context(), share.ItemType, share.JellyfinItemID)
 	if err != nil {
 		log.Printf("Failed to get episodes: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to get episodes")
@@ -926,7 +976,7 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if !containsEpisode(episodes, episodeID) {
+	if !jellyfin.ContainsEpisode(episodes, episodeID) {
 		writeError(w, http.StatusForbidden, "episode not part of this share")
 		return
 	}

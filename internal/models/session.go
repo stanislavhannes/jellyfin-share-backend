@@ -72,8 +72,12 @@ type PlayResponse struct {
 	SubtitleURL string    `json:"subtitleUrl,omitempty"`
 }
 
+// HeartbeatRequest is what a playing page reports, every few seconds and once
+// more when it finishes. With a duration, the position is kept as the link's
+// progress in the item the session is pinned to.
 type HeartbeatRequest struct {
 	PositionSeconds *int64 `json:"positionSeconds,omitempty"`
+	DurationSeconds *int64 `json:"durationSeconds,omitempty"`
 }
 
 type HeartbeatResponse struct {

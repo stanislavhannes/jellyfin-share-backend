@@ -1,53 +1,79 @@
 <script>
+  import BrandMark from './BrandMark.svelte';
   export let error;
 
-  // Errors name what broke, then what to do about it. No apology, no emoji —
-  // the status code carries the diagnosis for anyone who needs it.
+  // Errors name what broke, then what to do about it. No apology, no emoji, and
+  // no status codes or server strings: those are for logs, not for whoever
+  // opened the link.
   const errorMessages = {
     404: {
       title: 'Not found',
-      description: 'This link doesn’t point at anything. It was either never created, or it has been deleted since.',
-      action: 'Ask whoever sent it for a fresh link.'
+      description: 'This link doesn’t point at anything. Chat apps sometimes cut a link short, so check you opened all of it.',
+      action: 'If it is complete, ask whoever shared it for a new link.'
     },
     410: {
       title: 'No longer available',
-      description: 'The link has run out — it expired, hit its play limit, or the owner revoked it.',
-      action: 'Ask whoever sent it for a fresh link.'
+      description: 'This link has expired, or whoever shared it switched it off.',
+      action: 'Ask whoever shared it for a new link.'
     },
     403: {
       title: 'Access denied',
       description: 'This link exists, but it doesn’t grant access to that content.',
       action: 'Check you opened the full link, including everything after the last slash.'
     },
+    0: {
+      title: 'Couldn’t reach the server',
+      description: 'The page loaded, but the server behind it didn’t answer.',
+      action: 'Check your connection and reload the page.'
+    },
     default: {
-      title: 'Couldn’t load the share',
-      description: 'The server answered, but not with a share.',
-      action: 'Reload the page. If it keeps failing, the backend may be down.'
+      title: 'Couldn’t load the link',
+      description: 'The server answered, but not with a link.',
+      action: 'Reload the page. If it keeps failing, let whoever shared it know.'
     }
   };
 
-  $: errorInfo = errorMessages[error?.status] || errorMessages.default;
-  $: detail = error?.message && error.message !== errorInfo.description ? error.message : '';
+  // Same day-month order and 24-hour clock as the share page.
+  const when = new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+  });
+
+  // A link that ran out says which one, why and since when - the server knows,
+  // so the page does not make the viewer guess between causes.
+  function goneMessage(gone) {
+    const at = new Date(gone.endedAt);
+    const date = Number.isNaN(at.getTime()) ? '' : ` on ${when.format(at)}`;
+    const name = [gone.seriesName, gone.title].filter(Boolean).join(', ');
+    const link = name ? `The link to ${name}` : 'This link';
+    if (gone.reason === 'revoked') {
+      return { title: 'Switched off', description: `${link} was switched off by whoever shared it${date}.`, action: errorMessages[410].action };
+    }
+    if (gone.reason === 'expired') {
+      return { title: 'This link has expired', description: `${link} expired${date}.`, action: errorMessages[410].action };
+    }
+    return errorMessages[410];
+  }
+
+  $: errorInfo = error?.gone
+    ? goneMessage(error.gone)
+    : errorMessages[error?.status] || errorMessages.default;
 </script>
+
+<svelte:head><title>{errorInfo.title} · Jellyfin Share</title></svelte:head>
 
 <div class="error bloom-ground">
   <header class="nav">
-    <span class="wordmark">Jellyfin Share</span>
-    <span class="nav__status">{error?.status || '—'}</span>
+    <span class="wordmark"><BrandMark />Jellyfin Share</span>
   </header>
 
-  <div class="error__body">
+  <main class="error__body">
     <h1 class="error__title">{errorInfo.title}</h1>
     <p class="error__lede">{errorInfo.description}</p>
     <p class="error__action">{errorInfo.action}</p>
-
-    {#if detail}
-      <p class="error__detail">{detail}</p>
-    {/if}
-  </div>
+  </main>
 
   <footer class="foot">
-    <p>Shared via <a class="foot-link" href="https://github.com/stanislavhannes/jellyfin-share-backend" target="_blank" rel="noopener noreferrer">Jellyfin Share</a> · nothing was sent to the server</p>
+    <p>Shared via <a class="foot-link" href="https://github.com/stanislavhannes/jellyfin-share-backend" target="_blank" rel="noopener noreferrer">Jellyfin Share</a></p>
   </footer>
 </div>
 
@@ -57,7 +83,7 @@
    * design-system: design.md · designed-as-app
    */
   /* No card, no centred column, no icon. The statement sits low-left against a
-     single warm bloom; the emptiness above it is the design. */
+     single accent bloom; the emptiness above it is the design. */
   .error {
     display: grid;
     grid-template-rows: auto 1fr auto;
@@ -67,7 +93,7 @@
 
   .error > * { position: relative; z-index: var(--z-base); }
 
-  /* N9 · Edge-aligned minimal — wordmark hard-left, status hard-right, nothing between. */
+  /* N9 · Edge-aligned minimal — wordmark hard-left, nothing else: the statement below is the status. */
   .nav {
     display: flex;
     align-items: center;
@@ -77,19 +103,13 @@
   }
 
   .wordmark {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
     font-family: var(--font-display);
     font-size: var(--text-md);
     letter-spacing: -0.01em;
     color: var(--color-ink-2);
-    white-space: nowrap;
-  }
-
-  .nav__status {
-    font-family: var(--font-outlier);
-    font-size: var(--text-sm);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 0.08em;
-    color: var(--color-muted);
     white-space: nowrap;
   }
 
@@ -117,22 +137,11 @@
     color: var(--color-muted);
   }
 
-  .error__detail {
-    margin-top: var(--space-xl);
-    padding-top: var(--space-md);
-    border-top: var(--rule-hair) solid var(--color-rule-2);
-    font-family: var(--font-outlier);
-    font-size: var(--text-sm);
-    color: var(--color-muted);
-    overflow-wrap: anywhere;
-  }
-
   /* Ft2 · Inline single line */
   .foot {
     padding-block: var(--space-md) var(--space-lg);
     padding-bottom: max(var(--space-lg), env(safe-area-inset-bottom));
     border-top: var(--rule-hair) solid var(--color-rule-2);
-    font-family: var(--font-outlier);
     font-size: var(--text-sm);
     color: var(--color-neutral);
   }

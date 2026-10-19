@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/database"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/download"
+	"github.com/jellyfin-share/jellyfin-share-backend/internal/jellyfin"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/middleware"
 	"github.com/jellyfin-share/jellyfin-share-backend/internal/models"
 )
@@ -39,7 +40,7 @@ func (h *PublicHandler) RequestEpisodeDownload(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadGateway, "could not reach the media server")
 		return
 	}
-	if !containsEpisode(episodes, episodeID) {
+	if !jellyfin.ContainsEpisode(episodes, episodeID) {
 		writeError(w, http.StatusForbidden, "episode not part of this share")
 		return
 	}

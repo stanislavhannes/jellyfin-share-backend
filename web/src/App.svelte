@@ -39,17 +39,18 @@
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         if (response.status === 404) {
-          error = { message: 'Share not found', status: 404 };
+          error = { status: 404 };
         } else if (response.status === 410) {
-          error = { message: data.error || 'This share is no longer available', status: 410 };
+          // Why it ended, when, and which link it was - when the server says.
+          error = { status: 410, gone: data.reason ? data : null };
         } else {
-          error = { message: data.error || 'Failed to load share', status: response.status };
+          error = { status: response.status };
         }
       } else {
         shareInfo = await response.json();
       }
     } catch (e) {
-      error = { message: 'Failed to connect to server', status: 500 };
+      error = { status: 0 };
     } finally {
       loading = false;
     }
@@ -60,23 +61,25 @@
   }
 </script>
 
-<main>
+<!-- Each view names its own main and footer: a footer inside a shared main
+     would not count as the page's contentinfo. -->
+<div class="app">
   {#if isAdminRoute}
     <Admin />
   {:else if loading}
-    <div class="boot">
+    <main class="boot">
       <div class="boot__meter"></div>
       <p class="boot__label">Opening the link</p>
-    </div>
+    </main>
   {:else if error}
     <ErrorView {error} />
   {:else if shareInfo}
     <ShareView {shareInfo} {token} on:passwordSuccess={handlePasswordSuccess} />
   {/if}
-</main>
+</div>
 
 <style>
-  main {
+  .app {
     min-height: 100dvh;
   }
 

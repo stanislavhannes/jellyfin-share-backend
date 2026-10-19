@@ -53,6 +53,20 @@ export function isCastPossible() {
 }
 
 /**
+ * The sentence for a browser that will never show a Cast button, so the viewer
+ * learns how to reach a TV instead of finding nothing. Chromium gets none: its
+ * button appears once the SDK is up. Safari reaches a TV through AirPlay in its
+ * own player controls; anything else has no route from here.
+ */
+export function tvHint() {
+  if (typeof window === 'undefined' || window.chrome) return null;
+  if (window.WebKitPlaybackTargetAvailabilityEvent) {
+    return 'To watch on a TV, start playing and choose AirPlay in the player.';
+  }
+  return 'To watch on a TV, open this link in Chrome or Edge.';
+}
+
+/**
  * Loads the SDK and wires up state. Safe to call more than once, and a no-op on
  * an insecure origin.
  */
@@ -134,6 +148,7 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
   // HLS delivered as mpegts segments; the receiver is told so explicitly rather
   // than left to sniff it from the extension.
   const info = new chrome.cast.media.MediaInfo(abs(url), 'application/x-mpegURL');
+  loadedContentId = info.contentId;
   info.streamType = chrome.cast.media.StreamType.BUFFERED;
   if (durationSeconds) info.duration = durationSeconds;
 
@@ -207,7 +222,11 @@ export async function loadOnCast({ url, title, subtitle, posterUrl, subtitleUrl,
 let endedHandler = null;
 let lastEndedMediaId = null;
 
-function reportEnded(mediaSessionId) {
+function reportEnded(mediaSessionId, contentId) {
+  // Only what this page put on the receiver. Media another device loaded onto
+  // the same TV running out says nothing about this link - and advancing would
+  // mark this link's episode watched and load the next one over theirs.
+  if (!loadedContentId || contentId !== loadedContentId) return;
   // The end can be reported by both routes, and a state can repeat. Advancing
   // twice would skip an episode, so each media session ends the series once.
   if (mediaSessionId != null && mediaSessionId === lastEndedMediaId) return;
@@ -215,8 +234,31 @@ function reportEnded(mediaSessionId) {
   if (endedHandler) endedHandler();
 }
 
+// The SDK keeps this in step with the receiver: its state, and where it is in
+// what it plays.
+let remotePlayer = null;
+// What this page last put on the receiver. The default receiver is shared, so
+// another device can load something else onto the same TV; its position says
+// nothing about this link.
+let loadedContentId = null;
+
+/**
+ * Where the receiver is in what it plays, for the page's cast heartbeats - on a
+ * TV the receiver is the player, so only it knows. Null unless it is actually
+ * playing something: an idle receiver, or one that let go, reads 0, which is
+ * not a position anyone stopped at.
+ */
+export function castProgress() {
+  const p = remotePlayer;
+  if (!p?.isConnected || !p.isMediaLoaded || p.playerState === chrome.cast.media.PlayerState.IDLE) return null;
+  if (!loadedContentId || p.mediaInfo?.contentId !== loadedContentId) return null;
+  if (!(p.currentTime > 0)) return null;
+  return { position: p.currentTime, duration: p.duration > 0 && Number.isFinite(p.duration) ? p.duration : null };
+}
+
 function watchPlayer() {
   const player = new cast.framework.RemotePlayer();
+  remotePlayer = player;
   const controller = new cast.framework.RemotePlayerController(player);
   controller.addEventListener(
     cast.framework.RemotePlayerEventType.PLAYER_STATE_CHANGED,
@@ -227,7 +269,7 @@ function watchPlayer() {
       // stopped, or a receiver that was disconnected. Only the first advances.
       console.debug('Cast: receiver idle', media?.idleReason);
       if (media?.idleReason !== chrome.cast.media.IdleReason.FINISHED) return;
-      reportEnded(media.mediaSessionId);
+      reportEnded(media.mediaSessionId, media.media?.contentId);
     }
   );
 }
@@ -237,7 +279,7 @@ function watchMedia(session) {
   if (!media) return;
   const id = media.mediaSessionId;
   media.addUpdateListener(() => {
-    if (media.idleReason === chrome.cast.media.IdleReason.FINISHED) reportEnded(id);
+    if (media.idleReason === chrome.cast.media.IdleReason.FINISHED) reportEnded(id, media.media?.contentId);
   });
 }
 
@@ -258,10 +300,11 @@ export function toBcp47(code) {
 
 // Gives the receiver something readable in its track menu - "German" rather than
 // a bare "Subtitles" - falling back when the language is unknown.
-function languageName(tag) {
+export function languageName(tag) {
   if (!tag || tag === 'und') return null;
   try {
-    return new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' }).of(tag);
+    // English, like the page and its labels around the name.
+    return new Intl.DisplayNames(['en'], { type: 'language' }).of(tag);
   } catch (e) {
     return null;
   }
@@ -273,24 +316,29 @@ export function stopCast() {
 
 /**
  * The SDK rejects with an error code string or an event-like object, not an
- * Error, so `e.message` is usually undefined. Returns null when the viewer simply
- * dismissed the picker, which is not a failure worth showing.
+ * Error, so `e.message` is usually undefined. Returns { cause, next }: what
+ * happened and what to try, apart so a caller can swap the next step when there
+ * is nothing left to try with. Returns null when the viewer simply dismissed the
+ * picker, which is not a failure worth showing.
  */
 export function describeCastError(e) {
   const code = typeof e === 'string' ? e : (e?.code || e?.message);
   if (code === 'cancel' || code === chrome?.cast?.ErrorCode?.CANCEL) return null;
 
-  // Anything unexpected reaches the console in full. The message below is all the
-  // viewer sees, and "could not cast" on its own is impossible to act on - for a
-  // failure that only shows up on real hardware, the code is the whole diagnosis.
+  // Anything unexpected reaches the console in full: for a failure that only
+  // shows up on real hardware, the code is the whole diagnosis.
   console.error('Cast failed', code, e);
 
+  // The code itself stays in the console; the viewer gets what happened and
+  // what to try, in the page's own voice.
   switch (code) {
-    case 'timeout': return 'The cast device did not respond';
-    case 'receiver_unavailable': return 'No cast device could be reached';
-    case 'session_error': return 'The cast device refused the media';
-    case 'load_failed': return 'The cast device could not load the stream';
-    case 'invalid_parameter': return 'The cast device rejected the request';
-    default: return `Could not cast to the device (${code || 'unknown error'})`;
+    case 'timeout':
+    case 'receiver_unavailable':
+      return { cause: 'The TV couldn’t be reached.', next: 'Check it’s on and on the same Wi-Fi as this device, then try again.' };
+    case 'session_error':
+    case 'load_failed':
+      return { cause: 'The TV couldn’t play the video.', next: 'Try again, or watch here instead.' };
+    default:
+      return { cause: 'Casting didn’t work.', next: 'Try again, or watch here instead.' };
   }
 }

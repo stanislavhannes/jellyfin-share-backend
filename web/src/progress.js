@@ -1,10 +1,10 @@
-// Where the viewer left off, kept in this browser. A share link has no account
-// behind it, so the browser is the only place that can remember - and that is
-// also the right scope: a link forwarded to someone else should not open on the
-// sender's position.
+// Where the link's viewers left off. The server keeps it per link, not per
+// browser, so a film started on a phone resumes on the laptop: the playing page
+// reports its position with every heartbeat and once more when it stops, and
+// casting reports the receiver's position the same way.
 //
-// One record per share token: the item last watched, and a position per item.
-// The item key is the episode id, or MAIN for a film.
+// One record per link: the item last watched, and a position per item. The item
+// key is the episode id, or MAIN for a film.
 
 export const MAIN = 'main';
 
@@ -15,36 +15,49 @@ const MIN_RESUME_SECONDS = 10;
 // watched, and a series resumes on the next episode instead.
 const WATCHED_RATIO = 0.92;
 
-const keyFor = (token) => `jfshare:progress:${token}`;
+export const emptyProgress = () => ({ last: null, items: {} });
 
-export function loadProgress(token) {
+// The link's record from the server, or null when it could not be read. A
+// failure is not "nothing watched": treating it so would start the next play
+// at 0, and its heartbeats would overwrite where the link was really left.
+export async function loadProgress(token) {
+  // Where earlier versions kept it, in this browser. Nothing reads it now.
   try {
-    const parsed = JSON.parse(localStorage.getItem(keyFor(token)) || 'null');
-    if (parsed && typeof parsed === 'object' && parsed.items) return parsed;
+    localStorage.removeItem(`jfshare:progress:${token}`);
   } catch (e) {
-    // Storage blocked (private mode, a strict policy) or a mangled record:
-    // the page works the same, it just cannot remember.
+    // Storage blocked - nothing was kept there either.
   }
-  return { last: null, items: {} };
+  try {
+    const response = await fetch(`/api/public/shares/${token}/progress`, { credentials: 'include' });
+    if (response.ok) {
+      const record = await response.json();
+      if (record && typeof record === 'object' && record.items) {
+        return { last: record.last || null, items: record.items };
+      }
+    }
+  } catch (e) {
+    // Offline or refused - fall through.
+  }
+  return null;
 }
 
-// Takes the record the caller already holds - this runs every few seconds
-// during playback - and returns a new one so the caller stays reactive.
-export function saveProgress(token, current, itemKey, position, duration) {
+// The page's own copy, updated while it plays so the list and the Resume button
+// are right the moment the player closes, without waiting for a reload. The
+// server is told separately, by the player's heartbeats. Returns a new record
+// so the caller stays reactive.
+// A brief start does not replace a real position - the server keeps the same
+// rule, so the page shows what everyone else will see.
+export function noteProgress(current, itemKey, position, duration) {
   if (!itemKey || !(duration > 0)) return current;
-  const record = {
+  const stored = current.items[itemKey];
+  if (stored && position < MIN_RESUME_SECONDS && stored.position >= MIN_RESUME_SECONDS) return current;
+  return {
     last: itemKey,
     items: {
       ...current.items,
       [itemKey]: { position: Math.max(0, Math.min(position, duration)), duration }
     }
   };
-  try {
-    localStorage.setItem(keyFor(token), JSON.stringify(record));
-  } catch (e) {
-    // Full or blocked - nothing to do but keep going.
-  }
-  return record;
 }
 
 export function isWatched(entry) {

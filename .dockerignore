@@ -1,0 +1,20 @@
+# Kept out of the build context: what only slows the build down or does not
+# belong in its cache - the local demo's Jellyfin and media, the env files
+# with keys, and tooling output.
+.git
+.github
+.devcontainer
+.impeccable
+.local
+**/.env
+**/.env.*
+!**/.env.example
+docs
+web/node_modules
+web/dist
+web/.preview
+.hallmark
+*.log
+coverage.*
+/jfshare
+/tmp

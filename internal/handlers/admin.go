@@ -157,11 +157,24 @@ func (h *AdminHandler) ListShares(w http.ResponseWriter, r *http.Request) {
 
 	var shares []models.Share
 	var err error
+	total, live, hasMore := 0, 0, false
 
 	if jellyfinUserID != "" {
+		// A user's own links - the plugin's view - come back whole.
 		shares, err = h.db.GetSharesByUser(r.Context(), jellyfinUserID)
 	} else {
-		shares, err = h.db.GetAllShares(r.Context(), 100, 0)
+		// The index loads a page at a time, newest first, continuing below the
+		// last link it holds, and is told how many links there are in all and how
+		// many are live - it cannot count what it has not loaded. One row more
+		// than asked for says whether another page follows.
+		q := r.URL.Query()
+		limit, after := models.ParsePage(q.Get("limit"), q.Get("beforeCreatedAt"), q.Get("beforeId"))
+		shares, err = h.db.GetSharesPage(r.Context(), limit+1, after)
+		if err == nil {
+			hasMore = len(shares) > limit
+			shares = shares[:min(len(shares), limit)]
+			total, live, err = h.db.CountShares(r.Context())
+		}
 	}
 
 	if err != nil {
@@ -203,9 +216,20 @@ func (h *AdminHandler) ListShares(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 
+	if jellyfinUserID != "" {
+		total = len(items)
+		for _, s := range shares {
+			if s.IsValid() {
+				live++
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"shares": items,
-		"total":  len(items),
+		"shares":  items,
+		"total":   total,
+		"live":    live,
+		"hasMore": hasMore,
 	})
 }
 
