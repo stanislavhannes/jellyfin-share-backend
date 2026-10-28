@@ -227,8 +227,9 @@
     const hasAirPlay = typeof window !== 'undefined'
       && 'WebKitPlaybackTargetAvailabilityEvent' in window;
     const nativeHls = !!videoElement.canPlayType('application/vnd.apple.mpegurl');
+    const isApple = nativeHls && (hasAirPlay || /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
 
-    if (Hls.isSupported() && !(hasAirPlay && nativeHls)) {
+    if (Hls.isSupported() && !isApple) {
       hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
