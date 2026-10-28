@@ -526,9 +526,9 @@ func transcodeBitrate(item *jellyfin.ItemInfo, targetCodec string, max int) int 
 		if bitrate < minTranscodeBitrate {
 			bitrate = minTranscodeBitrate
 		}
-	}
-	if bitrate > max {
-		bitrate = max
+		if bitrate > max {
+			bitrate = max
+		}
 	}
 	return bitrate
 }
@@ -708,7 +708,7 @@ func (h *PublicHandler) StartPlayback(w http.ResponseWriter, r *http.Request) {
 	h.db.LogAuditEvent(r.Context(), database.AuditEventPlaybackStarted, &share.ID, &session.ID, nil, &ipHash, nil)
 
 	// Generate playback URL
-	playbackURL := h.cfg.PublicBaseURL + "/api/public/stream/" + session.ID.String() + "/master.m3u8"
+	playbackURL := h.cfg.PublicBaseURL + "/api/public/stream/" + session.ID.String() + "/main.m3u8"
 
 	writeJSON(w, http.StatusOK, models.PlayResponse{
 		SessionID:   session.ID,
@@ -1068,7 +1068,7 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 	})
 
 	// Generate playback URL for the specific episode
-	playbackURL := h.cfg.PublicBaseURL + "/api/public/stream/" + session.ID.String() + "/master.m3u8"
+	playbackURL := h.cfg.PublicBaseURL + "/api/public/stream/" + session.ID.String() + "/main.m3u8"
 
 	writeJSON(w, http.StatusOK, models.PlayResponse{
 		SessionID:   session.ID,

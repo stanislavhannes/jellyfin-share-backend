@@ -187,26 +187,12 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session
 	// Handle different path types
 	if strings.HasSuffix(path, ".m3u8") {
 		// HLS manifest
-		if path == "master.m3u8" {
-			// Jellyfin keys a running transcode by DeviceId and item. With one
-			// constant DeviceId for the whole backend, starting the same episode a
-			// second time lands on the job the first playback started - and that job
-			// carries the audio and subtitle streams it was started with, not the
-			// ones this session just pinned. The viewer changes the language, picks
-			// the episode they already watched, and gets the old track back, while
-			// an episode they have not played yet honours the choice.
-			//
-			// Scoping the identity to the session makes each playback its own
-			// device, so there is no job to inherit. It also stops two viewers of
-			// the same share sharing one device identity on the Jellyfin side.
-			deviceID := "jfshare-backend"
-			if session != nil {
-				deviceID = "jfshare-" + session.ID.String()
-			}
-			params.Set("DeviceId", deviceID)
-			return baseURL + "/Videos/" + itemID + "/master.m3u8?" + params.Encode()
+		deviceID := "jfshare-backend"
+		if session != nil {
+			deviceID = "jfshare-" + session.ID.String()
 		}
-		// Sub-playlist
+		params.Set("DeviceId", deviceID)
+		params.Del("AllowVideoStreamCopy")
 		return baseURL + "/Videos/" + itemID + "/" + path + "?" + params.Encode()
 	}
 
@@ -216,6 +202,7 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string, session
 		if p.cfg.StreamAudioCodec == "" {
 			params.Del("AudioCodec")
 		}
+		params.Del("AllowVideoStreamCopy")
 		return baseURL + "/Videos/" + itemID + "/" + path + "?" + params.Encode()
 	}
 
